@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">K profile picture</title>
+  <desc id="description">An uppercase K in the dark violet visual style of the 7331.lol portfolio.</desc>
+  <defs>
+    <linearGradient id="background" x1="64" y1="32" x2="448" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#171024"/>
+      <stop offset="1" stop-color="#090611"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(256 215) rotate(90) scale(275)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7848dd" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#7848dd" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="letter" x1="130" y1="144" x2="385" y2="373" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f8f4ff"/>
+      <stop offset="1" stop-color="#e1d2ff"/>
+    </linearGradient>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.1" fill="#ffffff" fill-opacity="0.045"/>
+    </pattern>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#background)"/>
+  <rect width="512" height="512" fill="url(#glow)"/>
+  <rect width="512" height="512" fill="url(#dots)"/>
+  <circle cx="256" cy="256" r="248" fill="none" stroke="#c5a9ff" stroke-opacity="0.18" stroke-width="6"/>
+
+  <text
+    x="245"
+    y="354"
+    fill="url(#letter)"
+    font-family="Arial, Helvetica, sans-serif"
+    font-size="300"
+    font-weight="700"
+    letter-spacing="-18"
+    text-anchor="middle"
+  >K</text>
+  <circle cx="397" cy="354" r="22" fill="#9c72ff"/>
+</svg>

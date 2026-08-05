@@ -145,6 +145,23 @@ def completed_web_search(data: dict[str, Any]) -> bool:
     )
 
 
+def used_native_web_feed(data: dict[str, Any]) -> bool:
+    """Return whether hosted search consulted an opaque OpenAI real-time feed."""
+    for item in data.get("output", []):
+        if not isinstance(item, dict) or item.get("type") != "web_search_call":
+            continue
+        action = item.get("action")
+        if not isinstance(action, dict):
+            continue
+        for source in action.get("sources", []):
+            if not isinstance(source, dict):
+                continue
+            name = str(source.get("name", ""))
+            if source.get("type") == "api" and name.startswith("oai-"):
+                return True
+    return False
+
+
 def extract_response(data: dict[str, Any]) -> tuple[str, list[Source]]:
     """Extract assistant text and unique web citations from a Responses API payload."""
     text_parts: list[str] = []
@@ -236,7 +253,6 @@ class OpenAIChatClient:
     @staticmethod
     def _source_retry_input(
         question: str | list[dict[str, str]],
-        answer: str,
     ) -> str:
         if isinstance(question, str):
             latest_question = question
@@ -250,11 +266,11 @@ class OpenAIChatClient:
                 str(question[-1].get("content", "")) if question else "",
             )
         return (
-            "Repeat the answer using URL-backed public webpages. You must use web "
+            "Answer the request independently using URL-backed public webpages. You must use web "
             "search and cite at least one public webpage that directly supports the "
-            "answer. Do not use only a native finance, weather, or sports feed.\n\n"
-            f"User request:\n{latest_question[:MAX_CONTEXT_ITEM_LENGTH]}\n\n"
-            f"Unsourced draft:\n{answer[:MAX_CONTEXT_ITEM_LENGTH]}"
+            "answer. Do not use a native finance, weather, or sports feed. Ignore any "
+            "earlier draft and derive the answer only from the cited webpages.\n\n"
+            f"User request:\n{latest_question[:MAX_CONTEXT_ITEM_LENGTH]}"
         )
 
     async def ask(
@@ -263,6 +279,7 @@ class OpenAIChatClient:
         *,
         require_web_search: bool = False,
         require_source_links: bool = False,
+        reject_native_feeds: bool = False,
     ) -> tuple[str, list[Source]]:
         if not self.api_key:
             raise OpenAIAPIError(0, "OPENAI_API_KEY is not configured")
@@ -297,15 +314,19 @@ class OpenAIChatClient:
         if not text:
             raise OpenAIAPIError(502, "OpenAI returned an empty response")
 
-        if require_source_links and completed_web_search(data) and not sources:
+        must_retry_for_sources = require_source_links and completed_web_search(data) and not sources
+        must_retry_for_native_feed = reject_native_feeds and used_native_web_feed(data)
+        if must_retry_for_sources or must_retry_for_native_feed:
             retry_payload = {
                 **payload,
-                "input": self._source_retry_input(question, text),
+                "input": self._source_retry_input(question),
                 "tool_choice": "required",
             }
             retry_data = await self._create_response(retry_payload)
             if not completed_web_search(retry_data):
                 raise OpenAIAPIError(502, "OpenAI did not complete the source-link search")
+            if reject_native_feeds and used_native_web_feed(retry_data):
+                raise OpenAIAPIError(502, "OpenAI web search used a rejected native feed")
             text, sources = extract_response(retry_data)
             if not text:
                 raise OpenAIAPIError(502, "OpenAI returned an empty sourced response")

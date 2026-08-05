@@ -1,5 +1,5 @@
 from collections import deque
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from kevin.config import TelegramSettings
 from kevin.openai_chat import (
@@ -98,6 +98,7 @@ async def test_telegram_answers_reuse_history_without_forcing_search_for_regular
     assert second_call.kwargs == {
         "require_web_search": False,
         "require_source_links": True,
+        "reject_native_feeds": True,
     }
     assert second_call.args[0][:2] == [
         {"role": "user", "content": "first question"},
@@ -120,4 +121,29 @@ async def test_telegram_requires_search_for_an_explicit_web_request() -> None:
     assert bot.openai.ask.await_args.kwargs == {
         "require_web_search": True,
         "require_source_links": True,
+        "reject_native_feeds": True,
     }
+
+
+async def test_telegram_uses_coinbase_instead_of_openai_for_crypto_prices() -> None:
+    bot = TelegramKevin(TelegramSettings(token="telegram-token", openai_api_key="openai-key"))
+    bot.session = object()
+    bot.openai.ask = AsyncMock()
+    bot._typing = AsyncMock()
+    bot._send_message = AsyncMock()
+    sourced_quote = (
+        "Ethereum is currently **$1,900.00 USD** on Coinbase.",
+        [Source("Coinbase ETH-USD spot price", "https://api.coinbase.com/price")],
+    )
+
+    with patch(
+        "kevin.telegram_bot.coinbase_spot_price",
+        new=AsyncMock(return_value=sourced_quote),
+    ) as fetch_price:
+        await bot._answer(message("what's ethereum's current price"), "what's ethereum's current price", None)
+
+    fetch_price.assert_awaited_once()
+    bot.openai.ask.assert_not_awaited()
+    sent_text = bot._send_message.await_args.args[1]
+    assert "Coinbase ETH-USD spot price" in sent_text
+    assert "https://api.coinbase.com/price" in sent_text

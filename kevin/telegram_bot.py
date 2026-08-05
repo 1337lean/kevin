@@ -11,6 +11,7 @@ from typing import Any
 import aiohttp
 
 from kevin.config import TelegramSettings
+from kevin.market_data import MarketDataError, coinbase_spot_price, requested_crypto_spot_price
 from kevin.openai_chat import (
     MAX_CONVERSATION_TURNS,
     ConversationTurn,
@@ -241,18 +242,31 @@ class TelegramKevin:
             history = self.conversations.get(key, deque())
             prompt = with_conversation_context(question, history, previous_reply)
             search_required = requires_web_search(question)
+            crypto_asset = requested_crypto_spot_price(question)
 
             typing_task = asyncio.create_task(self._typing(message))
             try:
                 async with self.request_slots:
-                    # The Responses API may skip an optional tool even when the user
-                    # explicitly asks for it. Guarantee search for explicit, current,
-                    # or URL-based questions; leave ordinary chat in automatic mode.
-                    text, sources = await self.openai.ask(
-                        prompt,
-                        require_web_search=search_required,
-                        require_source_links=True,
-                    )
+                    if crypto_asset is not None:
+                        if self.session is None:
+                            raise MarketDataError("Telegram client is not started")
+                        text, sources = await coinbase_spot_price(self.session, crypto_asset)
+                    else:
+                        # Guarantee explicit/current searches, require public URL
+                        # citations, and reject opaque native data feeds.
+                        text, sources = await self.openai.ask(
+                            prompt,
+                            require_web_search=search_required,
+                            require_source_links=True,
+                            reject_native_feeds=True,
+                        )
+            except MarketDataError as exc:
+                log.warning("Verified market-data request failed: %s", exc)
+                await self._send_message(
+                    message,
+                    "I couldn't get a verified live Coinbase price just now—try again shortly.",
+                )
+                return
             except OpenAIAPIError as exc:
                 log.warning("OpenAI request failed (%s): %s", exc.status, exc)
                 if exc.status == 401:

@@ -15,6 +15,7 @@ from kevin.openai_chat import (
     OpenAIChatClient,
     completed_web_search,
     requires_web_search,
+    used_native_web_feed,
 )
 
 
@@ -214,6 +215,25 @@ def _sourced_response(text: str = "sourced answer") -> dict:
     }
 
 
+def _native_feed_response(text: str = "native answer") -> dict:
+    return {
+        "output": [
+            {
+                "type": "web_search_call",
+                "status": "completed",
+                "action": {
+                    "type": "search",
+                    "sources": [{"type": "api", "name": "oai-finance"}],
+                },
+            },
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": text}],
+            },
+        ]
+    }
+
+
 async def test_openai_client_can_require_web_search() -> None:
     client = OpenAIChatClient("test-key", "test-model")
     session = _FakeOpenAISession()
@@ -277,7 +297,51 @@ async def test_openai_client_retries_a_search_that_has_no_public_url() -> None:
     assert text == "retried with a public source"
     assert sources == [Source("Example source", "https://example.com/source")]
     assert len(session.payloads) == 2
-    assert "Unsourced draft:\nsearched" in session.payloads[1]["input"]
+    assert "User request:\nwhat is the current price?" in session.payloads[1]["input"]
+    assert "searched" not in session.payloads[1]["input"]
+
+
+async def test_openai_client_rejects_native_feeds_and_retries_independently() -> None:
+    client = OpenAIChatClient("test-key", "test-model")
+    first_answer = "stale native answer"
+    session = _FakeOpenAISession(
+        [
+            _native_feed_response(first_answer),
+            _sourced_response("independent webpage answer"),
+        ]
+    )
+    client.session = session
+
+    text, sources = await client.ask(
+        "what is the current price?",
+        require_web_search=True,
+        require_source_links=True,
+        reject_native_feeds=True,
+    )
+
+    assert text == "independent webpage answer"
+    assert sources == [Source("Example source", "https://example.com/source")]
+    assert first_answer not in session.payloads[1]["input"]
+    assert used_native_web_feed(_native_feed_response()) is True
+
+
+async def test_openai_client_fails_if_the_retry_still_uses_a_native_feed() -> None:
+    client = OpenAIChatClient("test-key", "test-model")
+    session = _FakeOpenAISession([_native_feed_response(), _native_feed_response()])
+    client.session = session
+
+    try:
+        await client.ask(
+            "what is the current price?",
+            require_web_search=True,
+            require_source_links=True,
+            reject_native_feeds=True,
+        )
+    except OpenAIAPIError as exc:
+        assert exc.status == 502
+        assert "rejected native feed" in str(exc)
+    else:
+        raise AssertionError("A repeated native-feed response should fail")
 
 
 async def test_openai_client_rejects_a_missing_required_web_search() -> None:

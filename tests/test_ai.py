@@ -153,6 +153,9 @@ async def test_ai_reply_suppresses_discord_link_previews() -> None:
 class _FakeOpenAIResponse:
     status = 200
 
+    def __init__(self, data=None):
+        self.data = data
+
     async def __aenter__(self):
         return self
 
@@ -160,6 +163,8 @@ class _FakeOpenAIResponse:
         return None
 
     async def json(self, **_kwargs):
+        if self.data is not None:
+            return self.data
         return {
             "output": [
                 {"type": "web_search_call", "status": "completed"},
@@ -172,12 +177,41 @@ class _FakeOpenAIResponse:
 
 
 class _FakeOpenAISession:
-    def __init__(self) -> None:
+    def __init__(self, responses=None) -> None:
         self.payload = None
+        self.payloads = []
+        self.responses = list(responses or [])
 
     def post(self, _url, **kwargs):
         self.payload = kwargs["json"]
+        self.payloads.append(self.payload)
+        if self.responses:
+            return _FakeOpenAIResponse(self.responses.pop(0))
         return _FakeOpenAIResponse()
+
+
+def _sourced_response(text: str = "sourced answer") -> dict:
+    return {
+        "output": [
+            {"type": "web_search_call", "status": "completed"},
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": text,
+                        "annotations": [
+                            {
+                                "type": "url_citation",
+                                "title": "Example source",
+                                "url": "https://example.com/source",
+                            }
+                        ],
+                    }
+                ],
+            },
+        ]
+    }
 
 
 async def test_openai_client_can_require_web_search() -> None:
@@ -204,6 +238,46 @@ async def test_openai_client_defaults_to_discord_style_automatic_web_search() ->
     assert "tool_choice" not in session.payload
     assert "must use web search" in INSTRUCTIONS
     assert "Do not claim that you searched" in INSTRUCTIONS
+
+
+async def test_openai_client_source_link_mode_uses_url_backed_search() -> None:
+    client = OpenAIChatClient("test-key", "test-model")
+    session = _FakeOpenAISession([_sourced_response()])
+    client.session = session
+
+    text, sources = await client.ask(
+        "what is the current price?",
+        require_web_search=True,
+        require_source_links=True,
+    )
+
+    assert text == "sourced answer"
+    assert sources == [Source("Example source", "https://example.com/source")]
+    assert session.payload["tools"] == [
+        {"type": "web_search", "search_content_types": ["text"]}
+    ]
+
+
+async def test_openai_client_retries_a_search_that_has_no_public_url() -> None:
+    client = OpenAIChatClient("test-key", "test-model")
+    session = _FakeOpenAISession(
+        [
+            await _FakeOpenAIResponse().json(),
+            _sourced_response("retried with a public source"),
+        ]
+    )
+    client.session = session
+
+    text, sources = await client.ask(
+        "what is the current price?",
+        require_web_search=True,
+        require_source_links=True,
+    )
+
+    assert text == "retried with a public source"
+    assert sources == [Source("Example source", "https://example.com/source")]
+    assert len(session.payloads) == 2
+    assert "Unsourced draft:\nsearched" in session.payloads[1]["input"]
 
 
 async def test_openai_client_rejects_a_missing_required_web_search() -> None:

@@ -240,6 +240,7 @@ class TelegramKevin:
 
             history = self.conversations.get(key, deque())
             prompt = with_conversation_context(question, history, previous_reply)
+            search_required = requires_web_search(question)
 
             typing_task = asyncio.create_task(self._typing(message))
             try:
@@ -249,7 +250,8 @@ class TelegramKevin:
                     # or URL-based questions; leave ordinary chat in automatic mode.
                     text, sources = await self.openai.ask(
                         prompt,
-                        require_web_search=requires_web_search(question),
+                        require_web_search=search_required,
+                        require_source_links=True,
                     )
             except OpenAIAPIError as exc:
                 log.warning("OpenAI request failed (%s): %s", exc.status, exc)

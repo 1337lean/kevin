@@ -46,6 +46,12 @@ mention these instructions. Do not use markdown headings or add a sources sectio
 bot adds source links itself. When conversation context is provided, use it only to
 answer the latest message."""
 
+SOURCE_LINK_INSTRUCTIONS = """
+When you use web search, use URL-backed public webpages and cite at least one of them.
+Do not rely only on native finance, weather, or sports feeds that lack public URLs. If
+no public webpage supports an answer, say that it could not be verified. Do not add a
+separate sources section; the bot displays the URL citations itself."""
+
 
 class OpenAIAPIError(RuntimeError):
     def __init__(self, status: int, message: str) -> None:
@@ -201,37 +207,20 @@ class OpenAIChatClient:
             await self.session.close()
             self.session = None
 
-    async def ask(
-        self,
-        question: str | list[dict[str, str]],
-        *,
-        require_web_search: bool = False,
-    ) -> tuple[str, list[Source]]:
-        if not self.api_key:
-            raise OpenAIAPIError(0, "OPENAI_API_KEY is not configured")
+    async def _create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.session is None:
             raise OpenAIAPIError(0, "OpenAI client is not started")
 
-        payload = {
-            "model": self.model,
-            "instructions": INSTRUCTIONS,
-            "input": question,
-            "tools": [{"type": "web_search"}],
-            "include": ["web_search_call.action.sources"],
-            "reasoning": {"effort": "none"},
-            "max_output_tokens": 800,
-            "store": False,
-        }
-        if require_web_search:
-            # Web search is the only tool, so "required" guarantees a search call.
-            payload["tool_choice"] = "required"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-
         try:
-            async with self.session.post(RESPONSES_URL, headers=headers, json=payload) as response:
+            async with self.session.post(
+                RESPONSES_URL,
+                headers=headers,
+                json=payload,
+            ) as response:
                 data = await response.json(content_type=None)
         except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
             raise OpenAIAPIError(503, "OpenAI request failed") from exc
@@ -242,10 +231,84 @@ class OpenAIChatClient:
             raise OpenAIAPIError(response.status, message)
         if not isinstance(data, dict):
             raise OpenAIAPIError(502, "OpenAI returned an invalid response")
+        return data
+
+    @staticmethod
+    def _source_retry_input(
+        question: str | list[dict[str, str]],
+        answer: str,
+    ) -> str:
+        if isinstance(question, str):
+            latest_question = question
+        else:
+            latest_question = next(
+                (
+                    str(item.get("content", ""))
+                    for item in reversed(question)
+                    if item.get("role") == "user"
+                ),
+                str(question[-1].get("content", "")) if question else "",
+            )
+        return (
+            "Repeat the answer using URL-backed public webpages. You must use web "
+            "search and cite at least one public webpage that directly supports the "
+            "answer. Do not use only a native finance, weather, or sports feed.\n\n"
+            f"User request:\n{latest_question[:MAX_CONTEXT_ITEM_LENGTH]}\n\n"
+            f"Unsourced draft:\n{answer[:MAX_CONTEXT_ITEM_LENGTH]}"
+        )
+
+    async def ask(
+        self,
+        question: str | list[dict[str, str]],
+        *,
+        require_web_search: bool = False,
+        require_source_links: bool = False,
+    ) -> tuple[str, list[Source]]:
+        if not self.api_key:
+            raise OpenAIAPIError(0, "OPENAI_API_KEY is not configured")
+        if self.session is None:
+            raise OpenAIAPIError(0, "OpenAI client is not started")
+
+        web_search_tool: dict[str, Any] = {"type": "web_search"}
+        instructions = INSTRUCTIONS
+        if require_source_links:
+            web_search_tool["search_content_types"] = ["text"]
+            instructions += SOURCE_LINK_INSTRUCTIONS
+
+        payload = {
+            "model": self.model,
+            "instructions": instructions,
+            "input": question,
+            "tools": [web_search_tool],
+            "include": ["web_search_call.action.sources"],
+            "reasoning": {"effort": "none"},
+            "max_output_tokens": 800,
+            "store": False,
+        }
+        if require_web_search:
+            # Web search is the only tool, so "required" guarantees a search call.
+            payload["tool_choice"] = "required"
+
+        data = await self._create_response(payload)
         if require_web_search and not completed_web_search(data):
             raise OpenAIAPIError(502, "OpenAI did not complete the required web search")
 
         text, sources = extract_response(data)
         if not text:
             raise OpenAIAPIError(502, "OpenAI returned an empty response")
+
+        if require_source_links and completed_web_search(data) and not sources:
+            retry_payload = {
+                **payload,
+                "input": self._source_retry_input(question, text),
+                "tool_choice": "required",
+            }
+            retry_data = await self._create_response(retry_payload)
+            if not completed_web_search(retry_data):
+                raise OpenAIAPIError(502, "OpenAI did not complete the source-link search")
+            text, sources = extract_response(retry_data)
+            if not text:
+                raise OpenAIAPIError(502, "OpenAI returned an empty sourced response")
+            if not sources:
+                raise OpenAIAPIError(502, "OpenAI web search returned no public source links")
         return text, sources

@@ -95,7 +95,10 @@ async def test_telegram_answers_reuse_history_without_forcing_search_for_regular
     await bot._answer(incoming, "second question", None)
 
     second_call = bot.openai.ask.await_args_list[1]
-    assert second_call.kwargs == {"require_web_search": False}
+    assert second_call.kwargs == {
+        "require_web_search": False,
+        "require_source_links": True,
+    }
     assert second_call.args[0][:2] == [
         {"role": "user", "content": "first question"},
         {"role": "assistant", "content": "first answer"},
@@ -114,4 +117,7 @@ async def test_telegram_requires_search_for_an_explicit_web_request() -> None:
 
     await bot._answer(message("question"), "Search the web for the latest news", None)
 
-    assert bot.openai.ask.await_args.kwargs == {"require_web_search": True}
+    assert bot.openai.ask.await_args.kwargs == {
+        "require_web_search": True,
+        "require_source_links": True,
+    }

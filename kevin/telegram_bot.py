@@ -17,6 +17,7 @@ from kevin.openai_chat import (
     OpenAIAPIError,
     OpenAIChatClient,
     Source,
+    requires_web_search,
     with_conversation_context,
 )
 
@@ -243,9 +244,13 @@ class TelegramKevin:
             typing_task = asyncio.create_task(self._typing(message))
             try:
                 async with self.request_slots:
-                    # Match Discord: offer web_search and let the model use it when
-                    # useful or explicitly requested by the user.
-                    text, sources = await self.openai.ask(prompt)
+                    # The Responses API may skip an optional tool even when the user
+                    # explicitly asks for it. Guarantee search for explicit, current,
+                    # or URL-based questions; leave ordinary chat in automatic mode.
+                    text, sources = await self.openai.ask(
+                        prompt,
+                        require_web_search=requires_web_search(question),
+                    )
             except OpenAIAPIError as exc:
                 log.warning("OpenAI request failed (%s): %s", exc.status, exc)
                 if exc.status == 401:

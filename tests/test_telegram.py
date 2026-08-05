@@ -83,7 +83,7 @@ def test_conversation_context_keeps_multiple_recent_turns() -> None:
     assert context[-1] == {"role": "user", "content": "latest question"}
 
 
-async def test_telegram_answers_reuse_history_and_match_discord_web_search_call() -> None:
+async def test_telegram_answers_reuse_history_without_forcing_search_for_regular_chat() -> None:
     bot = TelegramKevin(TelegramSettings(token="telegram-token", openai_api_key="openai-key"))
     bot.openai.ask = AsyncMock(side_effect=[("first answer", []), ("second answer", [])])
     bot._typing = AsyncMock()
@@ -95,7 +95,7 @@ async def test_telegram_answers_reuse_history_and_match_discord_web_search_call(
     await bot._answer(incoming, "second question", None)
 
     second_call = bot.openai.ask.await_args_list[1]
-    assert second_call.kwargs == {}
+    assert second_call.kwargs == {"require_web_search": False}
     assert second_call.args[0][:2] == [
         {"role": "user", "content": "first question"},
         {"role": "assistant", "content": "first answer"},
@@ -104,3 +104,14 @@ async def test_telegram_answers_reuse_history_and_match_discord_web_search_call(
         "role": "user",
         "content": "second question",
     }
+
+
+async def test_telegram_requires_search_for_an_explicit_web_request() -> None:
+    bot = TelegramKevin(TelegramSettings(token="telegram-token", openai_api_key="openai-key"))
+    bot.openai.ask = AsyncMock(return_value=("searched answer", []))
+    bot._typing = AsyncMock()
+    bot._send_message = AsyncMock()
+
+    await bot._answer(message("question"), "Search the web for the latest news", None)
+
+    assert bot.openai.ask.await_args.kwargs == {"require_web_search": True}

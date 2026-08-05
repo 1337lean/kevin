@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -11,6 +12,29 @@ RESPONSES_URL = "https://api.openai.com/v1/responses"
 MAX_SOURCES = 3
 MAX_CONVERSATION_TURNS = 20
 MAX_CONTEXT_ITEM_LENGTH = 2_000
+
+_EXPLICIT_WEB_SEARCH_RE = re.compile(
+    r"\b(?:"
+    r"search(?:\s+(?:the\s+)?)?(?:web|internet|online)?|"
+    r"web\s+search|"
+    r"look\s+(?:(?:it|this|that|something)\s+)?up|"
+    r"browse(?:\s+(?:the\s+)?(?:web|internet))?|"
+    r"google(?:\s+(?:it|this|that))?|"
+    r"(?:check|find|verify)\s+(?:it\s+)?(?:online|on\s+the\s+web)|"
+    r"use\s+(?:the\s+)?(?:web|internet)|"
+    r"cite\s+(?:your\s+)?sources?"
+    r")\b",
+    re.IGNORECASE,
+)
+_CURRENT_INFORMATION_RE = re.compile(
+    r"\b(?:"
+    r"today|tonight|tomorrow|yesterday|now|currently|current|latest|recent|recently|"
+    r"up[ -]to[ -]date|breaking|live|news|weather|forecast|prices?|scores?|schedule|"
+    r"standings"
+    r")\b",
+    re.IGNORECASE,
+)
+_URL_RE = re.compile(r"https?://", re.IGNORECASE)
 
 INSTRUCTIONS = """You are Kevin, a friendly regular in an online community.
 Answer the user's question directly and casually. Keep the reply short: usually 1-3
@@ -39,6 +63,15 @@ class Source:
 class ConversationTurn:
     question: str
     reply: str
+
+
+def requires_web_search(question: str) -> bool:
+    """Return whether a user request needs a guaranteed hosted web search."""
+    return bool(
+        _EXPLICIT_WEB_SEARCH_RE.search(question)
+        or _CURRENT_INFORMATION_RE.search(question)
+        or _URL_RE.search(question)
+    )
 
 
 def with_reply_context(question: str, previous_reply: str | None) -> str:

@@ -9,7 +9,13 @@ from kevin.cogs.ai import (
     mentioned_question,
     with_reply_context,
 )
-from kevin.openai_chat import INSTRUCTIONS, OpenAIAPIError, OpenAIChatClient, completed_web_search
+from kevin.openai_chat import (
+    INSTRUCTIONS,
+    OpenAIAPIError,
+    OpenAIChatClient,
+    completed_web_search,
+    requires_web_search,
+)
 
 
 def test_mentioned_question_strips_direct_bot_mentions() -> None:
@@ -27,6 +33,14 @@ def test_reply_context_includes_previous_answer_and_follow_up() -> None:
 
 def test_reply_context_is_not_added_without_a_previous_reply() -> None:
     assert with_reply_context("new question", None) == "new question"
+
+
+def test_requires_web_search_detects_explicit_and_current_requests() -> None:
+    assert requires_web_search("Search the web for this") is True
+    assert requires_web_search("Can you look this up?") is True
+    assert requires_web_search("What's the latest OpenAI news?") is True
+    assert requires_web_search("Summarize https://example.com/article") is True
+    assert requires_web_search("Explain how decorators work") is False
 
 
 def test_extract_response_collects_text_and_unique_safe_sources() -> None:

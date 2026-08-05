@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 import aiohttp
 
@@ -125,14 +125,48 @@ def with_conversation_context(
 def _safe_source(annotation: dict[str, Any]) -> Source | None:
     if annotation.get("type") not in {"url", "url_citation"}:
         return None
-    url = str(annotation.get("url", "")).strip()
-    parsed = urlparse(url)
+    raw_url = str(annotation.get("url", "")).strip()
+    parsed = urlparse(raw_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
+    clean_query = urlencode(
+        [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if not key.casefold().startswith("utm_")
+            and key.casefold() not in {"fbclid", "gclid"}
+        ],
+        doseq=True,
+    )
+    url = parsed._replace(query=clean_query).geturl()
     fallback_title = parsed.netloc.removeprefix("www.")
     title = " ".join(str(annotation.get("title") or fallback_title).split())
     title = title.replace("[", "").replace("]", "")[:80]
     return Source(title=title, url=url)
+
+
+def _without_inline_citations(text: str, annotations: list[Any]) -> str:
+    """Remove API-annotated inline citations; callers render a clean source list."""
+    spans: list[tuple[int, int]] = []
+    for annotation in annotations:
+        if not isinstance(annotation, dict) or annotation.get("type") != "url_citation":
+            continue
+        start = annotation.get("start_index")
+        end = annotation.get("end_index")
+        if (
+            isinstance(start, int)
+            and isinstance(end, int)
+            and 0 <= start < end <= len(text)
+        ):
+            spans.append((start, end))
+
+    for start, end in sorted(spans, reverse=True):
+        text = text[:start] + text[end:]
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"[ \t]+([,.;:!?])", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def completed_web_search(data: dict[str, Any]) -> bool:
@@ -174,10 +208,13 @@ def extract_response(data: dict[str, Any]) -> tuple[str, list[Source]]:
         for content in item.get("content", []):
             if not isinstance(content, dict) or content.get("type") != "output_text":
                 continue
-            text = str(content.get("text", "")).strip()
+            annotations = content.get("annotations", [])
+            if not isinstance(annotations, list):
+                annotations = []
+            text = _without_inline_citations(str(content.get("text", "")), annotations)
             if text:
                 text_parts.append(text)
-            for annotation in content.get("annotations", []):
+            for annotation in annotations:
                 if not isinstance(annotation, dict):
                     continue
                 source = _safe_source(annotation)

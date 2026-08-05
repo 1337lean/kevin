@@ -7,6 +7,7 @@ import re
 from collections import deque
 from time import monotonic
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -46,12 +47,19 @@ def format_telegram_reply(text: str, sources: list[Source]) -> str:
     source_block = ""
     if sources:
         lines: list[str] = []
+        seen_sites: set[str] = set()
         for source in sources:
-            line = f"• {source.title} — {source.url}"
+            site = (urlparse(source.url).hostname or source.url).casefold().removeprefix("www.")
+            if site in seen_sites:
+                continue
+            title = " ".join(source.title.split())
+            label = site if not title or len(title) > 50 else title
+            line = f"• {label} — {source.url}"
             candidate = "\n".join([*lines, line])
             if len(f"\n\nSources:\n{candidate}") > MAX_SOURCE_BLOCK_LENGTH:
                 continue
             lines.append(line)
+            seen_sites.add(site)
         if lines:
             joined_lines = "\n".join(lines)
             source_block = f"\n\nSources:\n{joined_lines}"

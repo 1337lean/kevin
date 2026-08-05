@@ -65,6 +65,32 @@ def test_telegram_reply_has_clickable_sources_and_fits_limit() -> None:
     assert reply.endswith("Sources:\n• Example — https://example.com/news")
 
 
+def test_telegram_reply_shows_only_one_clean_link_per_site() -> None:
+    reply = format_telegram_reply(
+        "A sourced answer.",
+        [
+            Source("Example article", "https://example.com/one"),
+            Source("Duplicate site", "https://www.example.com/two"),
+            Source("Another source", "https://another.example/news"),
+        ],
+    )
+
+    assert reply == (
+        "A sourced answer.\n\nSources:\n"
+        "• Example article — https://example.com/one\n"
+        "• Another source — https://another.example/news"
+    )
+
+
+def test_telegram_reply_uses_site_name_instead_of_a_truncated_title() -> None:
+    reply = format_telegram_reply(
+        "A sourced answer.",
+        [Source("A very long article title " * 5, "https://www.example.com/news")],
+    )
+
+    assert reply.endswith("Sources:\n• example.com — https://www.example.com/news")
+
+
 def test_telegram_reply_does_not_claim_search_without_sources() -> None:
     assert format_telegram_reply("A regular answer.", []) == "A regular answer."
 

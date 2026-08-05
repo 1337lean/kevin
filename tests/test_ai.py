@@ -111,6 +111,39 @@ def test_extract_response_falls_back_to_web_search_action_sources() -> None:
     assert completed_web_search(payload) is True
 
 
+def test_extract_response_removes_inline_citation_markup_and_tracking() -> None:
+    citation = "([Example](https://example.com/news?utm_source=openai&id=7))"
+    text_with_citation = f"A clean answer. {citation}"
+    start = text_with_citation.index(citation)
+    payload = {
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": text_with_citation,
+                        "annotations": [
+                            {
+                                "type": "url_citation",
+                                "title": "Example",
+                                "url": "https://example.com/news?utm_source=openai&id=7",
+                                "start_index": start,
+                                "end_index": start + len(citation),
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+
+    text, sources = extract_response(payload)
+
+    assert text == "A clean answer."
+    assert sources == [Source("Example", "https://example.com/news?id=7")]
+
+
 def test_format_reply_adds_clickable_sources_and_stays_within_discord_limit() -> None:
     reply = format_reply("x" * 2_500, [Source("Example", "https://example.com")])
 

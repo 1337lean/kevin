@@ -253,6 +253,36 @@ uv run pytest
 uv run python -m compileall -q kevin
 ```
 
+## Automatic VPS deployment
+
+Every push to `main` runs linting, the test suite, and a compile check in GitHub
+Actions. If all checks pass, the exact tested commit is deployed to the VPS and the
+`kevin.service` user service is restarted. Deployments are serialized, so two quick
+pushes cannot update the bot at the same time. The workflow can also be run manually
+from the repository's **Actions** tab.
+
+The VPS keeps runtime state outside Git: `.env`, `data/`, `.venv/`, `bin/`, and
+`vendor/` are preserved during deployment. Before each restart, the deploy script uses
+SQLite's online backup API to save a consistent database copy under
+`data/backups/`; the ten newest backups are retained.
+
+The workflow expects these GitHub Actions secrets:
+
+```text
+VPS_HOST          VPS IP address or hostname
+VPS_USER          SSH account that owns the user service
+VPS_SSH_KEY       Dedicated private SSH key for deployments
+VPS_KNOWN_HOSTS   Pinned SSH host-key entry for the VPS
+```
+
+The service is installed at `~/.config/systemd/user/kevin.service` and runs the
+Discord and Telegram bots together from `~/apps/kevin`. Useful VPS checks are:
+
+```bash
+systemctl --user status kevin.service
+journalctl --user -u kevin.service -f
+```
+
 ## Project layout
 
 ```text

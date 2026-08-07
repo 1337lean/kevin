@@ -160,9 +160,6 @@ async def test_ai_reply_suppresses_discord_link_previews() -> None:
     cog._ask_openai = AsyncMock(
         return_value=("A short answer.", [Source("Example", "https://example.com")])
     )
-    cog.cooldowns = SimpleNamespace(
-        get_bucket=lambda _message: SimpleNamespace(update_rate_limit=lambda: None)
-    )
     message = SimpleNamespace(
         guild=object(),
         author=SimpleNamespace(id=1),

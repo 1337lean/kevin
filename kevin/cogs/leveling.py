@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import random
 import time
-from collections import defaultdict
 
 import discord
 from discord.ext import commands
@@ -33,7 +32,7 @@ class Leveling(commands.Cog):
 
     def __init__(self, bot: KevinBot) -> None:
         self.bot = bot
-        self.cooldowns: dict[tuple[int, int], float] = defaultdict(float)
+        self.cooldowns: dict[tuple[int, int], float] = {}
 
     def prune_cooldowns(self, now: float) -> None:
         """Drop expired entries so a busy bot's cooldown map cannot grow forever."""
@@ -55,7 +54,8 @@ class Leveling(commands.Cog):
             return
         key = (message.guild.id, message.author.id)
         now = time.monotonic()
-        if now - self.cooldowns[key] < XP_COOLDOWN:
+        previous_award = self.cooldowns.get(key)
+        if previous_award is not None and now - previous_award < XP_COOLDOWN:
             return
         # Claim the slot before the first await below. Every message in a burst
         # otherwise clears this check while the earlier ones are still awaiting, and

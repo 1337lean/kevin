@@ -64,9 +64,6 @@ class AI(commands.Cog):
             bot.settings.openai_api_key or "",
             getattr(bot.settings, "openai_model", "gpt-5.6-luna"),
         )
-        self.cooldowns = commands.CooldownMapping.from_cooldown(
-            1, 5.0, commands.BucketType.user
-        )
         self.request_slots = asyncio.Semaphore(3)
 
     async def cog_load(self) -> None:
@@ -123,16 +120,6 @@ class AI(commands.Cog):
         if not self.bot.settings.openai_api_key:
             await message.reply(
                 "my OpenAI key isn't set up yet—add `OPENAI_API_KEY` and restart me.",
-                mention_author=False,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-            return
-
-        bucket = self.cooldowns.get_bucket(message)
-        retry_after = bucket.update_rate_limit() if bucket else None
-        if retry_after:
-            await message.reply(
-                f"give me {retry_after:.0f}s and ask again.",
                 mention_author=False,
                 allowed_mentions=discord.AllowedMentions.none(),
             )

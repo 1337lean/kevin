@@ -121,8 +121,13 @@ def test_all_gambling_commands_share_the_unlimited_bet_converter() -> None:
 def test_economy_money_commands_support_compact_amounts() -> None:
     assert Economy.pay.clean_params["amount"].annotation is KashAmountConverter
     assert Economy.addmoney.clean_params["amount"].annotation is GrantAmountConverter
+    assert Economy.removemoney.clean_params["amount"].annotation is GrantAmountConverter
     assert Economy.pay.app_command.get_parameter("amount").type is discord.AppCommandOptionType.string
     assert Economy.addmoney.app_command.get_parameter("amount").type is discord.AppCommandOptionType.string
+    assert (
+        Economy.removemoney.app_command.get_parameter("amount").type
+        is discord.AppCommandOptionType.string
+    )
 
     assert parse_kash_amount("50k") == 50_000
     with pytest.raises(commands.BadArgument):
@@ -149,3 +154,40 @@ async def test_bot_owner_can_use_addmoney_without_server_administrator() -> None
 
     assert await owner_or_admin(ctx)
     assert Economy.addmoney.app_command.default_permissions is None
+
+
+async def test_only_administrators_can_use_removemoney() -> None:
+    administrator_check = next(
+        check
+        for check in Economy.removemoney.checks
+        if "has_guild_permissions" in check.__qualname__
+    )
+    denied = SimpleNamespace(
+        author=SimpleNamespace(guild_permissions=discord.Permissions.none()),
+        guild=object(),
+    )
+    allowed_permissions = discord.Permissions.none()
+    allowed_permissions.administrator = True
+    allowed = SimpleNamespace(
+        author=SimpleNamespace(guild_permissions=allowed_permissions),
+        guild=object(),
+    )
+
+    with pytest.raises(commands.MissingPermissions):
+        administrator_check(denied)
+    assert administrator_check(allowed)
+
+
+async def test_removemoney_deducts_from_the_members_wallet() -> None:
+    db = SimpleNamespace(change_balance=AsyncMock(return_value=750))
+    cog = Economy(SimpleNamespace(db=db))
+    ctx = SimpleNamespace(
+        guild=SimpleNamespace(id=123),
+        send=AsyncMock(),
+    )
+    member = SimpleNamespace(id=456, mention="<@456>")
+
+    await Economy.removemoney.callback(cog, ctx, member=member, amount=250)
+
+    db.change_balance.assert_awaited_once_with(123, 456, -250)
+    ctx.send.assert_awaited_once()

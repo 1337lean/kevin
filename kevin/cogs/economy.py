@@ -876,6 +876,26 @@ class Economy(commands.Cog):
             )
         )
 
+    @commands.hybrid_command(description="Remove Kash from a member's wallet (administrator)")
+    @commands.guild_only()
+    @commands.has_guild_permissions(administrator=True)
+    async def removemoney(
+        self,
+        ctx: commands.Context,
+        member: discord.Member,
+        amount: int = commands.parameter(converter=GrantAmountConverter),
+    ) -> None:
+        try:
+            balance = await self.bot.db.change_balance(ctx.guild.id, member.id, -amount)
+        except ValueError as exc:
+            raise commands.BadArgument("That member does not have enough Kash.") from exc
+        await ctx.send(
+            embed=success(
+                f"Removed **{amount:,} {CURRENCY}** from {member.mention}. "
+                f"Their wallet now has **{balance:,} {CURRENCY}**."
+            )
+        )
+
     @commands.hybrid_command(description="Deposit Kash from your wallet into your bank")
     async def deposit(
         self, ctx: commands.Context, amount: int = commands.parameter(converter=KashAmountConverter)

@@ -156,26 +156,20 @@ async def test_bot_owner_can_use_addmoney_without_server_administrator() -> None
     assert Economy.addmoney.app_command.default_permissions is None
 
 
-async def test_only_administrators_can_use_removemoney() -> None:
-    administrator_check = next(
+async def test_bot_owner_can_use_removemoney_without_server_administrator() -> None:
+    owner_or_admin = next(
         check
         for check in Economy.removemoney.checks
-        if "has_guild_permissions" in check.__qualname__
+        if "owner_or_guild_permissions" in check.__qualname__
     )
-    denied = SimpleNamespace(
+    ctx = SimpleNamespace(
+        bot=SimpleNamespace(is_owner=AsyncMock(return_value=True)),
         author=SimpleNamespace(guild_permissions=discord.Permissions.none()),
         guild=object(),
     )
-    allowed_permissions = discord.Permissions.none()
-    allowed_permissions.administrator = True
-    allowed = SimpleNamespace(
-        author=SimpleNamespace(guild_permissions=allowed_permissions),
-        guild=object(),
-    )
 
-    with pytest.raises(commands.MissingPermissions):
-        administrator_check(denied)
-    assert administrator_check(allowed)
+    assert await owner_or_admin(ctx)
+    assert Economy.removemoney.app_command.default_permissions is None
 
 
 async def test_removemoney_deducts_from_the_members_wallet() -> None:

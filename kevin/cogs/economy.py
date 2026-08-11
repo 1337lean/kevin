@@ -878,7 +878,7 @@ class Economy(commands.Cog):
 
     @commands.hybrid_command(description="Remove Kash from a member's wallet (administrator)")
     @commands.guild_only()
-    @commands.has_guild_permissions(administrator=True)
+    @owner_or_guild_permissions(administrator=True)
     async def removemoney(
         self,
         ctx: commands.Context,

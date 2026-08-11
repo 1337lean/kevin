@@ -94,8 +94,10 @@ class KashAmountConverter(commands.Converter[int]):
         return parse_kash_amount(argument)
 
 
-class GrantAmountConverter(commands.Converter[int]):
-    async def convert(self, ctx: commands.Context, argument: str) -> int:
+class GrantAmountConverter(commands.Converter[int | str]):
+    async def convert(self, ctx: commands.Context, argument: str) -> int | str:
+        if argument.strip().casefold() == "all":
+            return "all"
         return parse_compact_amount(argument, maximum=MAX_GRANT, noun="Amount")
 
 
@@ -732,6 +734,14 @@ class Economy(commands.Cog):
             "SELECT * FROM members WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
         )
 
+    async def resolve_admin_amount(self, guild_id: int, user_id: int, amount: int | str) -> int:
+        if amount != "all":
+            return amount
+        balance = await self.bot.db.change_balance(guild_id, user_id, 0)
+        if balance < 1:
+            raise commands.BadArgument(f"That member does not have any {CURRENCY}.")
+        return balance
+
     async def quantity(self, guild_id: int, user_id: int, item: str) -> int:
         row = await self.bot.db.fetchone(
             "SELECT quantity FROM inventory WHERE guild_id = ? AND user_id = ? AND item_key = ?",
@@ -866,8 +876,9 @@ class Economy(commands.Cog):
         self,
         ctx: commands.Context,
         member: discord.Member,
-        amount: int = commands.parameter(converter=GrantAmountConverter),
+        amount: int | str = commands.parameter(converter=GrantAmountConverter),
     ) -> None:
+        amount = await self.resolve_admin_amount(ctx.guild.id, member.id, amount)
         balance = await self.bot.db.change_balance(ctx.guild.id, member.id, amount)
         await ctx.send(
             embed=success(
@@ -883,8 +894,9 @@ class Economy(commands.Cog):
         self,
         ctx: commands.Context,
         member: discord.Member,
-        amount: int = commands.parameter(converter=GrantAmountConverter),
+        amount: int | str = commands.parameter(converter=GrantAmountConverter),
     ) -> None:
+        amount = await self.resolve_admin_amount(ctx.guild.id, member.id, amount)
         try:
             balance = await self.bot.db.change_balance(ctx.guild.id, member.id, -amount)
         except ValueError as exc:

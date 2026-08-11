@@ -138,6 +138,7 @@ async def test_addmoney_accepts_grants_over_100_million() -> None:
     ctx = SimpleNamespace()
 
     assert await GrantAmountConverter().convert(ctx, "250m") == 250_000_000
+    assert await GrantAmountConverter().convert(ctx, " ALL ") == "all"
 
 
 async def test_bot_owner_can_use_addmoney_without_server_administrator() -> None:
@@ -185,3 +186,31 @@ async def test_removemoney_deducts_from_the_members_wallet() -> None:
 
     db.change_balance.assert_awaited_once_with(123, 456, -250)
     ctx.send.assert_awaited_once()
+
+
+async def test_addmoney_all_adds_the_members_current_wallet_balance() -> None:
+    db = SimpleNamespace(change_balance=AsyncMock(side_effect=[500, 1_000]))
+    cog = Economy(SimpleNamespace(db=db))
+    ctx = SimpleNamespace(guild=SimpleNamespace(id=123), send=AsyncMock())
+    member = SimpleNamespace(id=456, mention="<@456>")
+
+    await Economy.addmoney.callback(cog, ctx, member=member, amount="all")
+
+    assert db.change_balance.await_args_list == [
+        ((123, 456, 0),),
+        ((123, 456, 500),),
+    ]
+
+
+async def test_removemoney_all_empties_the_members_wallet() -> None:
+    db = SimpleNamespace(change_balance=AsyncMock(side_effect=[500, 0]))
+    cog = Economy(SimpleNamespace(db=db))
+    ctx = SimpleNamespace(guild=SimpleNamespace(id=123), send=AsyncMock())
+    member = SimpleNamespace(id=456, mention="<@456>")
+
+    await Economy.removemoney.callback(cog, ctx, member=member, amount="all")
+
+    assert db.change_balance.await_args_list == [
+        ((123, 456, 0),),
+        ((123, 456, -500),),
+    ]

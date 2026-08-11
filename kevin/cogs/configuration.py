@@ -35,7 +35,6 @@ class Configuration(commands.Cog):
         card.add_field(name="Autorole", value=role)
         card.add_field(name="Welcome channel", value=channel("welcome_channel_id"))
         card.add_field(name="Goodbye channel", value=channel("goodbye_channel_id"))
-        card.add_field(name="Leveling", value="On" if settings.get("levels_enabled") else "Off")
         card.add_field(name="Economy", value="On" if settings.get("economy_enabled") else "Off")
         card.add_field(name="Automod", value="On" if settings.get("automod_enabled") else "Off")
         await ctx.send(embed=card)
@@ -110,12 +109,6 @@ class Configuration(commands.Cog):
         await ctx.send(
             embed=success(f"Autorole {'set to ' + role.mention if role else 'disabled'}.")
         )
-
-    @config.command(name="leveling", description="Enable or disable XP and levels")
-    @owner_or_guild_permissions(manage_guild=True)
-    async def leveling(self, ctx: commands.Context, enabled: bool) -> None:
-        await self.bot.db.set_setting(ctx.guild.id, "levels_enabled", int(enabled))
-        await ctx.send(embed=success(f"Leveling is now **{'on' if enabled else 'off'}**."))
 
     @config.command(name="economy", description="Enable or disable the economy")
     @owner_or_guild_permissions(manage_guild=True)

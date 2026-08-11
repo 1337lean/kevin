@@ -10,7 +10,7 @@ on OpenAI conversation and web-backed answers.
   locks, nicknames, role management, voice moderation, warnings, and case history.
 - **Automod:** spam, invite, link, excessive-caps, mass-mention, and custom blocked-term
   filters, with moderator exemptions and action logging.
-- **Community:** welcomes, goodbyes, autoroles, XP, ranks, leaderboards, polls, reminders,
+- **Community:** welcomes, goodbyes, autoroles, polls, reminders,
   member/server info, timestamps, and a safe calculator.
 - **Economy:** Kash wallet and bank balances, daily rewards, jobs, payments, admin
   grants, robbery, a collectible shop, inventory, coin flips, dice, interactive blackjack

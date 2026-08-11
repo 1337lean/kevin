@@ -73,7 +73,7 @@ class Core(commands.Cog):
         uptime = discord.utils.utcnow() - self.bot.started_at
         card = embed(
             "About K",
-            "A modular all-in-one bot for moderation, community tools, music, leveling, and games.",
+            "A modular all-in-one bot for moderation, community tools, music, and games.",
         )
         card.add_field(name="Servers", value=str(len(self.bot.guilds)))
         card.add_field(name="Users", value=f"{sum(g.member_count or 0 for g in self.bot.guilds):,}")

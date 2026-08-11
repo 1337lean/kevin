@@ -17,7 +17,6 @@ EXTENSIONS = (
     "kevin.cogs.moderation",
     "kevin.cogs.automod",
     "kevin.cogs.logging",
-    "kevin.cogs.leveling",
     "kevin.cogs.economy",
     "kevin.cogs.fun",
     "kevin.cogs.utility",

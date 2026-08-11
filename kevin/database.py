@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     starboard_channel_id INTEGER,
     starboard_threshold INTEGER NOT NULL DEFAULT 3,
     suggestion_channel_id INTEGER,
-    levels_enabled INTEGER NOT NULL DEFAULT 1,
     economy_enabled INTEGER NOT NULL DEFAULT 1,
     automod_enabled INTEGER NOT NULL DEFAULT 0,
     automod_invites INTEGER NOT NULL DEFAULT 0,
@@ -59,8 +58,6 @@ CREATE INDEX IF NOT EXISTS idx_warnings_user ON warnings(guild_id, user_id);
 CREATE TABLE IF NOT EXISTS members (
     guild_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
-    xp INTEGER NOT NULL DEFAULT 0,
-    level INTEGER NOT NULL DEFAULT 0,
     balance INTEGER NOT NULL DEFAULT 250,
     bank INTEGER NOT NULL DEFAULT 0,
     last_daily TEXT,
@@ -68,7 +65,6 @@ CREATE TABLE IF NOT EXISTS members (
     last_rob TEXT,
     PRIMARY KEY (guild_id, user_id)
 );
-CREATE INDEX IF NOT EXISTS idx_members_xp ON members(guild_id, xp DESC);
 CREATE INDEX IF NOT EXISTS idx_members_balance ON members(guild_id, balance DESC);
 
 CREATE TABLE IF NOT EXISTS inventory (
@@ -260,7 +256,6 @@ class Database:
             "starboard_channel_id",
             "starboard_threshold",
             "suggestion_channel_id",
-            "levels_enabled",
             "economy_enabled",
             "automod_enabled",
             "automod_invites",
@@ -318,41 +313,6 @@ class Database:
                 "streak": streak,
                 "best_streak": best_streak,
             }
-
-    async def add_xp(
-        self,
-        guild_id: int,
-        user_id: int,
-        amount: int,
-        level_for_xp: Callable[[int], int],
-    ) -> tuple[int, int, int]:
-        """Award activity XP and refresh the derived level in one atomic step.
-
-        Returns ``(new_xp, previous_level, new_level)``. Reading, awarding, and writing
-        under a single lock is what stops a burst of messages from either losing awards
-        to each other or stacking several awards inside one cooldown window.
-        """
-        async with self._lock:
-            conn = self._conn()
-            await conn.execute(
-                "INSERT OR IGNORE INTO members(guild_id, user_id) VALUES (?, ?)",
-                (guild_id, user_id),
-            )
-            row = await (
-                await conn.execute(
-                    "SELECT xp, level FROM members WHERE guild_id = ? AND user_id = ?",
-                    (guild_id, user_id),
-                )
-            ).fetchone()
-            previous_level = int(row[1])
-            new_xp = int(row[0]) + amount
-            new_level = level_for_xp(new_xp)
-            await conn.execute(
-                "UPDATE members SET xp = ?, level = ? WHERE guild_id = ? AND user_id = ?",
-                (new_xp, new_level, guild_id, user_id),
-            )
-            await conn.commit()
-            return new_xp, previous_level, new_level
 
     async def seize_balance(
         self,

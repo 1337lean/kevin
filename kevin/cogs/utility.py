@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import ast
+import asyncio
+import io
 import operator
 from datetime import UTC, datetime
+from pathlib import Path
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from kevin.bot import KevinBot
 from kevin.utils.formatting import embed, human_duration, parse_duration, success
@@ -45,6 +49,29 @@ OPS = {
     ast.USub: operator.neg,
     ast.UAdd: operator.pos,
 }
+
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_PIXELS = 16_000_000
+
+
+def image_to_gif(data: bytes) -> io.BytesIO:
+    """Convert one uploaded image to a Discord-ready GIF in memory."""
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            if source.width * source.height > MAX_IMAGE_PIXELS:
+                raise ValueError("The image is too large (maximum 16 megapixels).")
+
+            # EXIF orientation is common on phone photos. Loading after transposing also
+            # makes Pillow finish decoding the file before its input buffer is discarded.
+            converted = ImageOps.exif_transpose(source).convert("RGBA")
+            converted.load()
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValueError("That attachment is not a supported image.") from exc
+
+    output = io.BytesIO()
+    converted.save(output, format="GIF", optimize=True)
+    output.seek(0)
+    return output
 
 
 def safe_calculate(expression: str) -> int | float:
@@ -134,6 +161,33 @@ class Utility(commands.Cog):
         card = embed(f"Avatar · {member}")
         card.set_image(url=member.display_avatar.with_size(1024).url)
         await ctx.send(embed=card)
+
+    @commands.hybrid_command(
+        aliases=["imagegif"], description="Convert an uploaded image into a GIF"
+    )
+    @app_commands.describe(image="The PNG, JPEG, WebP, or other image to convert")
+    @commands.cooldown(2, 10, commands.BucketType.user)
+    async def togif(self, ctx: commands.Context, image: discord.Attachment) -> None:
+        if image.size > MAX_IMAGE_BYTES:
+            raise commands.BadArgument("The image must be 20 MB or smaller.")
+        if image.content_type and not image.content_type.startswith("image/"):
+            raise commands.BadArgument("Please upload an image file.")
+
+        await ctx.defer()
+        data = await image.read()
+        try:
+            output = await asyncio.to_thread(image_to_gif, data)
+        except ValueError as exc:
+            raise commands.BadArgument(str(exc)) from exc
+
+        upload_limit = ctx.guild.filesize_limit if ctx.guild else 10 * 1024 * 1024
+        if output.getbuffer().nbytes > upload_limit:
+            raise commands.BadArgument(
+                "The converted GIF is too large to upload in this server. Try a smaller image."
+            )
+
+        filename = f"{Path(image.filename).stem[:80] or 'converted'}.gif"
+        await ctx.send(file=discord.File(output, filename=filename))
 
     @commands.hybrid_command(description="Create a yes/no poll")
     async def poll(self, ctx: commands.Context, *, question: str) -> None:

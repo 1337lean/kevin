@@ -11,7 +11,7 @@ on OpenAI conversation and web-backed answers.
 - **Automod:** spam, invite, link, excessive-caps, mass-mention, and custom blocked-term
   filters, with moderator exemptions and action logging.
 - **Community:** welcomes, goodbyes, autoroles, polls, reminders,
-  member/server info, timestamps, and a safe calculator.
+  member/server info, timestamps, image-to-GIF conversion, and a safe calculator.
 - **Economy:** Kash wallet and bank balances, daily rewards, jobs, payments, admin
   grants, robbery, a collectible shop, inventory, coin flips, dice, interactive blackjack
   (`/blackjack` or `/bj`), interactive craps (`/craps`) with pass/don't pass lines and true

@@ -168,6 +168,7 @@ class AI(commands.Cog):
     @app_commands.describe(
         prompt="What the image should look like",
         size="Image dimensions (default: square)",
+        quality="Image quality (default: high)",
     )
     async def imagine(
         self,
@@ -175,6 +176,7 @@ class AI(commands.Cog):
         *,
         prompt: str,
         size: Literal["1024x1024", "1536x1024", "1024x1536"] = "1024x1024",
+        quality: Literal["low", "medium", "high"] = "high",
     ) -> None:
         if not self.bot.settings.openai_api_key:
             await ctx.reply(
@@ -203,7 +205,9 @@ class AI(commands.Cog):
         # invocations; defer alone only pings typing once and it fades in ~10s.
         try:
             async with self.image_slots, ctx.typing():
-                image_bytes = await self.images.generate(prompt.strip(), size=size)
+                image_bytes = await self.images.generate(
+                    prompt.strip(), size=size, quality=quality
+                )
         except OpenAIAPIError as exc:
             log.warning("OpenAI image request failed (%s): %s", exc.status, exc)
             if exc.status == 401:

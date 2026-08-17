@@ -60,7 +60,9 @@ class OpenAIImageClient:
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise OpenAIAPIError(503, "OpenAI image download failed") from exc
 
-    async def generate(self, prompt: str, *, size: str = "1024x1024") -> bytes:
+    async def generate(
+        self, prompt: str, *, size: str = "1024x1024", quality: str = "high"
+    ) -> bytes:
         if not self.api_key:
             raise OpenAIAPIError(0, "OPENAI_API_KEY is not configured")
         if self.session is None:
@@ -75,6 +77,7 @@ class OpenAIImageClient:
             "prompt": prompt,
             "n": 1,
             "size": size,
+            "quality": quality,
         }
         try:
             async with self.session.post(

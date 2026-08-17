@@ -191,7 +191,9 @@ class AI(commands.Cog):
             return
 
         await ctx.defer()
-        async with self.image_slots:
+        # ctx.typing() keeps the "K is typing…" indicator alive for prefix
+        # invocations; defer alone only pings typing once and it fades in ~10s.
+        async with self.image_slots, ctx.typing():
             try:
                 image_bytes = await self.images.generate(prompt.strip(), size=size)
             except OpenAIAPIError as exc:
@@ -201,7 +203,10 @@ class AI(commands.Cog):
                 elif exc.status == 429:
                     reply = "OpenAI's rate limit is busy right now—try me again in a bit."
                 elif exc.status == 400:
-                    reply = "OpenAI wouldn't draw that one—try a different prompt."
+                    detail = " ".join(str(exc).split())[:200]
+                    reply = f"OpenAI refused that one: {detail}" if detail else (
+                        "OpenAI wouldn't draw that one—try a different prompt."
+                    )
                 else:
                     reply = "I couldn't reach OpenAI just now—try me again in a minute."
                 await ctx.reply(

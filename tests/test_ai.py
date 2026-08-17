@@ -430,14 +430,3 @@ def test_extract_image_rejects_empty_payload() -> None:
             assert exc.status == 502
         else:
             raise AssertionError(f"payload {payload!r} should fail")
-
-
-def test_image_progress_bar_fills_and_caps() -> None:
-    from kevin.cogs.ai import image_progress
-
-    assert image_progress(0) == "░░░░░░░░░░░░ 0s"
-    half = image_progress(30)
-    assert half.count("█") == 6
-    assert half.endswith("30s")
-    # Past the estimate the bar caps at 95% instead of lying about being done.
-    assert image_progress(600).count("█") == 11

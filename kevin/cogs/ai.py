@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import time
 from typing import Literal
 
 import discord
@@ -24,17 +23,6 @@ log = logging.getLogger(__name__)
 
 MAX_DISCORD_LENGTH = 2_000
 MAX_SOURCE_LINE_LENGTH = 900
-PROGRESS_BAR_WIDTH = 12
-# The Images API reports no progress, so the bar estimates from elapsed time.
-ESTIMATED_IMAGE_SECONDS = 60
-
-
-def image_progress(elapsed: float) -> str:
-    """Render an elapsed-time progress bar for an in-flight image generation."""
-    ratio = min(elapsed / ESTIMATED_IMAGE_SECONDS, 0.95)
-    filled = round(ratio * PROGRESS_BAR_WIDTH)
-    bar = "█" * filled + "░" * (PROGRESS_BAR_WIDTH - filled)
-    return f"{bar} {int(elapsed)}s"
 
 
 def mentioned_question(content: str, bot_user_id: int) -> str | None:
@@ -205,25 +193,11 @@ class AI(commands.Cog):
         await ctx.defer()
         short_prompt = prompt.strip()[:200]
         status = await ctx.reply(
-            f"drawing “{short_prompt}”…\n{image_progress(0)}",
+            f"drawing “{short_prompt}”… this can take a minute.",
             mention_author=False,
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-        started = time.monotonic()
-
-        async def update_progress() -> None:
-            while True:
-                await asyncio.sleep(5)
-                try:
-                    await status.edit(
-                        content=f"drawing “{short_prompt}”…\n"
-                        f"{image_progress(time.monotonic() - started)}"
-                    )
-                except discord.HTTPException:
-                    pass  # A missed edit is fine; the next tick tries again.
-
-        progress_task = asyncio.create_task(update_progress())
         # ctx.typing() keeps the "K is typing…" indicator alive for prefix
         # invocations; defer alone only pings typing once and it fades in ~10s.
         try:
@@ -244,8 +218,6 @@ class AI(commands.Cog):
                 reply = "I couldn't reach OpenAI just now—try me again in a minute."
             await status.edit(content=reply)
             return
-        finally:
-            progress_task.cancel()
 
         file = discord.File(io.BytesIO(image_bytes), filename="kevin-image.png")
         await status.edit(

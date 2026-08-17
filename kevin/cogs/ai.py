@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import time
 from typing import Literal
 
 import discord
@@ -23,6 +24,17 @@ log = logging.getLogger(__name__)
 
 MAX_DISCORD_LENGTH = 2_000
 MAX_SOURCE_LINE_LENGTH = 900
+PROGRESS_BAR_WIDTH = 12
+# The Images API reports no progress, so the bar estimates from elapsed time.
+ESTIMATED_IMAGE_SECONDS = 60
+
+
+def image_progress(elapsed: float) -> str:
+    """Render an elapsed-time progress bar for an in-flight image generation."""
+    ratio = min(elapsed / ESTIMATED_IMAGE_SECONDS, 0.95)
+    filled = round(ratio * PROGRESS_BAR_WIDTH)
+    bar = "█" * filled + "░" * (PROGRESS_BAR_WIDTH - filled)
+    return f"{bar} {int(elapsed)}s"
 
 
 def mentioned_question(content: str, bot_user_id: int) -> str | None:
@@ -191,37 +203,54 @@ class AI(commands.Cog):
             return
 
         await ctx.defer()
-        # ctx.typing() keeps the "K is typing…" indicator alive for prefix
-        # invocations; defer alone only pings typing once and it fades in ~10s.
-        async with self.image_slots, ctx.typing():
-            try:
-                image_bytes = await self.images.generate(prompt.strip(), size=size)
-            except OpenAIAPIError as exc:
-                log.warning("OpenAI image request failed (%s): %s", exc.status, exc)
-                if exc.status == 401:
-                    reply = "my OpenAI key isn't working—someone needs to check it."
-                elif exc.status == 429:
-                    reply = "OpenAI's rate limit is busy right now—try me again in a bit."
-                elif exc.status == 400:
-                    detail = " ".join(str(exc).split())[:200]
-                    reply = f"OpenAI refused that one: {detail}" if detail else (
-                        "OpenAI wouldn't draw that one—try a different prompt."
-                    )
-                else:
-                    reply = "I couldn't reach OpenAI just now—try me again in a minute."
-                await ctx.reply(
-                    reply,
-                    mention_author=False,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-                return
-
-        file = discord.File(io.BytesIO(image_bytes), filename="kevin-image.png")
-        await ctx.reply(
-            f"here you go — “{prompt.strip()[:200]}”",
-            file=file,
+        short_prompt = prompt.strip()[:200]
+        status = await ctx.reply(
+            f"drawing “{short_prompt}”…\n{image_progress(0)}",
             mention_author=False,
             allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+        started = time.monotonic()
+
+        async def update_progress() -> None:
+            while True:
+                await asyncio.sleep(5)
+                try:
+                    await status.edit(
+                        content=f"drawing “{short_prompt}”…\n"
+                        f"{image_progress(time.monotonic() - started)}"
+                    )
+                except discord.HTTPException:
+                    pass  # A missed edit is fine; the next tick tries again.
+
+        progress_task = asyncio.create_task(update_progress())
+        # ctx.typing() keeps the "K is typing…" indicator alive for prefix
+        # invocations; defer alone only pings typing once and it fades in ~10s.
+        try:
+            async with self.image_slots, ctx.typing():
+                image_bytes = await self.images.generate(prompt.strip(), size=size)
+        except OpenAIAPIError as exc:
+            log.warning("OpenAI image request failed (%s): %s", exc.status, exc)
+            if exc.status == 401:
+                reply = "my OpenAI key isn't working—someone needs to check it."
+            elif exc.status == 429:
+                reply = "OpenAI's rate limit is busy right now—try me again in a bit."
+            elif exc.status == 400:
+                detail = " ".join(str(exc).split())[:200]
+                reply = f"OpenAI refused that one: {detail}" if detail else (
+                    "OpenAI wouldn't draw that one—try a different prompt."
+                )
+            else:
+                reply = "I couldn't reach OpenAI just now—try me again in a minute."
+            await status.edit(content=reply)
+            return
+        finally:
+            progress_task.cancel()
+
+        file = discord.File(io.BytesIO(image_bytes), filename="kevin-image.png")
+        await status.edit(
+            content=f"here you go — “{short_prompt}”",
+            attachments=[file],
         )
 
 

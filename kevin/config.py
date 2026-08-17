@@ -34,6 +34,7 @@ class Settings:
     youtube_api_key: str | None = None
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.6-luna"
+    openai_image_model: str = "gpt-image-1"
     log_level: str = "INFO"
 
     @classmethod
@@ -60,6 +61,8 @@ class Settings:
             openai_api_key=os.getenv("OPENAI_API_KEY", "").strip() or None,
             openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-luna").strip()
             or "gpt-5.6-luna",
+            openai_image_model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1").strip()
+            or "gpt-image-1",
             log_level=os.getenv("KEVIN_LOG_LEVEL", "INFO"),
         )
 

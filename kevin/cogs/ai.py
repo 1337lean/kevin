@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+from typing import Literal
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from kevin.bot import KevinBot
@@ -14,6 +17,7 @@ from kevin.openai_chat import (
     with_reply_context,
 )
 from kevin.openai_chat import extract_response as extract_response
+from kevin.openai_images import OpenAIImageClient
 
 log = logging.getLogger(__name__)
 
@@ -64,14 +68,21 @@ class AI(commands.Cog):
             bot.settings.openai_api_key or "",
             getattr(bot.settings, "openai_model", "gpt-5.6-luna"),
         )
+        self.images = OpenAIImageClient(
+            bot.settings.openai_api_key or "",
+            getattr(bot.settings, "openai_image_model", "gpt-image-1"),
+        )
         self.request_slots = asyncio.Semaphore(3)
+        self.image_slots = asyncio.Semaphore(2)
 
     async def cog_load(self) -> None:
         if self.bot.settings.openai_api_key:
             await self.openai.start()
+            await self.images.start()
 
     async def cog_unload(self) -> None:
         await self.openai.close()
+        await self.images.close()
 
     async def _ask_openai(self, question: str) -> tuple[str, list[Source]]:
         return await self.openai.ask(question)
@@ -150,6 +161,62 @@ class AI(commands.Cog):
             mention_author=False,
             allowed_mentions=discord.AllowedMentions.none(),
             suppress_embeds=True,
+        )
+
+    @commands.hybrid_command(description="Generate an image with OpenAI")
+    @app_commands.describe(
+        prompt="What the image should look like",
+        size="Image dimensions (default: square)",
+    )
+    async def imagine(
+        self,
+        ctx: commands.Context,
+        *,
+        prompt: str,
+        size: Literal["1024x1024", "1536x1024", "1024x1536"] = "1024x1024",
+    ) -> None:
+        if not self.bot.settings.openai_api_key:
+            await ctx.reply(
+                "my OpenAI key isn't set up yet—add `OPENAI_API_KEY` and restart me.",
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+        if not prompt.strip():
+            await ctx.reply(
+                "tell me what to draw first.",
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+
+        await ctx.defer()
+        async with self.image_slots:
+            try:
+                image_bytes = await self.images.generate(prompt.strip(), size=size)
+            except OpenAIAPIError as exc:
+                log.warning("OpenAI image request failed (%s): %s", exc.status, exc)
+                if exc.status == 401:
+                    reply = "my OpenAI key isn't working—someone needs to check it."
+                elif exc.status == 429:
+                    reply = "OpenAI's rate limit is busy right now—try me again in a bit."
+                elif exc.status == 400:
+                    reply = "OpenAI wouldn't draw that one—try a different prompt."
+                else:
+                    reply = "I couldn't reach OpenAI just now—try me again in a minute."
+                await ctx.reply(
+                    reply,
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return
+
+        file = discord.File(io.BytesIO(image_bytes), filename="kevin-image.png")
+        await ctx.reply(
+            f"here you go — “{prompt.strip()[:200]}”",
+            file=file,
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
 

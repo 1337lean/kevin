@@ -402,3 +402,31 @@ async def test_openai_client_rejects_a_missing_required_web_search() -> None:
             raise AssertionError("A missing required web search should fail")
     finally:
         _FakeOpenAIResponse.json = original_json
+
+
+def test_extract_image_decodes_b64_payload() -> None:
+    from kevin.openai_images import extract_image
+
+    payload = {"data": [{"b64_json": "aGVsbG8="}]}
+
+    assert extract_image(payload) == b"hello"
+
+
+def test_extract_image_returns_url_when_no_b64() -> None:
+    from kevin.openai_images import extract_image
+
+    payload = {"data": [{"url": "https://example.com/image.png"}]}
+
+    assert extract_image(payload) == "https://example.com/image.png"
+
+
+def test_extract_image_rejects_empty_payload() -> None:
+    from kevin.openai_images import extract_image
+
+    for payload in ({}, {"data": []}, {"data": [{}]}, {"data": [{"b64_json": "!!"}]}):
+        try:
+            extract_image(payload)
+        except OpenAIAPIError as exc:
+            assert exc.status == 502
+        else:
+            raise AssertionError(f"payload {payload!r} should fail")

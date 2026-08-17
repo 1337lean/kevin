@@ -164,6 +164,7 @@ class AI(commands.Cog):
         )
 
     @commands.hybrid_command(description="Generate an image with OpenAI")
+    @commands.is_owner()
     @app_commands.describe(
         prompt="What the image should look like",
         size="Image dimensions (default: square)",

@@ -5,15 +5,22 @@ import io
 import logging
 from typing import Literal
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from kevin.bot import KevinBot
+from kevin.market_data import (
+    MarketDataError,
+    live_price_reply,
+    requested_price_lookup,
+)
 from kevin.openai_chat import (
     OpenAIAPIError,
     OpenAIChatClient,
     Source,
+    requires_web_search,
     with_reply_context,
 )
 from kevin.openai_chat import extract_response as extract_response
@@ -74,8 +81,10 @@ class AI(commands.Cog):
         )
         self.request_slots = asyncio.Semaphore(3)
         self.image_slots = asyncio.Semaphore(2)
+        self.http: aiohttp.ClientSession | None = None
 
     async def cog_load(self) -> None:
+        self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
         if self.bot.settings.openai_api_key:
             await self.openai.start()
             await self.images.start()
@@ -83,9 +92,30 @@ class AI(commands.Cog):
     async def cog_unload(self) -> None:
         await self.openai.close()
         await self.images.close()
+        if self.http is not None:
+            await self.http.close()
+            self.http = None
 
-    async def _ask_openai(self, question: str) -> tuple[str, list[Source]]:
-        return await self.openai.ask(question)
+    async def _ask_openai(
+        self, question: str, previous_reply: str | None = None
+    ) -> tuple[str, list[Source]]:
+        """Answer from a live price API when asked for a quote, else from OpenAI.
+
+        Prices come from Coinbase and Yahoo Finance because hosted web search reads
+        crawled snapshots, which are stale for anything that ticks.
+        """
+        price_request = requested_price_lookup(question)
+        if price_request is not None and self.http is not None:
+            quoted = await live_price_reply(self.http, price_request)
+            if quoted is not None:
+                return quoted
+
+        return await self.openai.ask(
+            with_reply_context(question, previous_reply),
+            require_web_search=requires_web_search(question),
+            require_source_links=True,
+            reject_native_feeds=True,
+        )
 
     async def _bot_reply_context(self, message: discord.Message) -> str | None:
         """Return K's referenced message text, or None when this is not a reply to K."""
@@ -138,9 +168,15 @@ class AI(commands.Cog):
 
         async with self.request_slots, message.channel.typing():
             try:
-                text, sources = await self._ask_openai(
-                    with_reply_context(question, previous_reply)
+                text, sources = await self._ask_openai(question, previous_reply)
+            except MarketDataError as exc:
+                log.warning("Verified market-data request failed: %s", exc)
+                await message.reply(
+                    "I couldn't get a verified live price just now—try again shortly.",
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
                 )
+                return
             except OpenAIAPIError as exc:
                 log.warning("OpenAI request failed (%s): %s", exc.status, exc)
                 if exc.status == 401:

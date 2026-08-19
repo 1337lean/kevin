@@ -151,25 +151,46 @@ async def test_telegram_requires_search_for_an_explicit_web_request() -> None:
     }
 
 
-async def test_telegram_uses_coinbase_instead_of_openai_for_crypto_prices() -> None:
+async def test_telegram_uses_a_live_price_api_instead_of_openai_for_quotes() -> None:
     bot = TelegramKevin(TelegramSettings(token="telegram-token", openai_api_key="openai-key"))
     bot.session = object()
     bot.openai.ask = AsyncMock()
     bot._typing = AsyncMock()
     bot._send_message = AsyncMock()
     sourced_quote = (
-        "Ethereum is currently **$1,900.00 USD** on Coinbase.",
-        [Source("Coinbase ETH-USD spot price", "https://api.coinbase.com/price")],
+        "Ethereum (ETH) is **$1,900.00** on Coinbase.",
+        [Source("Coinbase ETH quote", "https://api.coinbase.com/price")],
     )
 
     with patch(
-        "kevin.telegram_bot.coinbase_spot_price",
+        "kevin.telegram_bot.live_price_reply",
         new=AsyncMock(return_value=sourced_quote),
     ) as fetch_price:
-        await bot._answer(message("what's ethereum's current price"), "what's ethereum's current price", None)
+        await bot._answer(
+            message("what's ethereum's current price"),
+            "what's ethereum's current price",
+            None,
+        )
 
     fetch_price.assert_awaited_once()
     bot.openai.ask.assert_not_awaited()
     sent_text = bot._send_message.await_args.args[1]
-    assert "Coinbase ETH-USD spot price" in sent_text
+    assert "Coinbase ETH quote" in sent_text
     assert "https://api.coinbase.com/price" in sent_text
+
+
+async def test_telegram_falls_back_to_search_when_no_asset_is_recognised() -> None:
+    """A price question about something neither provider quotes still gets answered."""
+    bot = TelegramKevin(TelegramSettings(token="telegram-token", openai_api_key="openai-key"))
+    bot.session = object()
+    bot.openai.ask = AsyncMock(return_value=("about $500", []))
+    bot._typing = AsyncMock()
+    bot._send_message = AsyncMock()
+
+    with patch("kevin.telegram_bot.live_price_reply", new=AsyncMock(return_value=None)):
+        await bot._answer(
+            message("what's the price of a PS5"), "what's the price of a PS5", None
+        )
+
+    bot.openai.ask.assert_awaited_once()
+    assert bot.openai.ask.await_args.kwargs["require_source_links"] is True

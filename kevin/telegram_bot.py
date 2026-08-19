@@ -12,7 +12,11 @@ from urllib.parse import urlparse
 import aiohttp
 
 from kevin.config import TelegramSettings
-from kevin.market_data import MarketDataError, coinbase_spot_price, requested_crypto_spot_price
+from kevin.market_data import (
+    MarketDataError,
+    live_price_reply,
+    requested_price_lookup,
+)
 from kevin.openai_chat import (
     MAX_CONVERSATION_TURNS,
     ConversationTurn,
@@ -250,15 +254,20 @@ class TelegramKevin:
             history = self.conversations.get(key, deque())
             prompt = with_conversation_context(question, history, previous_reply)
             search_required = requires_web_search(question)
-            crypto_asset = requested_crypto_spot_price(question)
+            price_request = requested_price_lookup(question)
 
             typing_task = asyncio.create_task(self._typing(message))
             try:
                 async with self.request_slots:
-                    if crypto_asset is not None:
+                    quoted = None
+                    if price_request is not None:
                         if self.session is None:
                             raise MarketDataError("Telegram client is not started")
-                        text, sources = await coinbase_spot_price(self.session, crypto_asset)
+                        # Live quotes come from Coinbase and Yahoo Finance; hosted
+                        # web search only sees stale crawled snapshots.
+                        quoted = await live_price_reply(self.session, price_request)
+                    if quoted is not None:
+                        text, sources = quoted
                     else:
                         # Guarantee explicit/current searches, require public URL
                         # citations, and reject opaque native data feeds.
@@ -272,7 +281,7 @@ class TelegramKevin:
                 log.warning("Verified market-data request failed: %s", exc)
                 await self._send_message(
                     message,
-                    "I couldn't get a verified live Coinbase price just now—try again shortly.",
+                    "I couldn't get a verified live price just now—try again shortly.",
                 )
                 return
             except OpenAIAPIError as exc:

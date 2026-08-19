@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from kevin.cogs.ai import (
     AI,
@@ -430,3 +430,43 @@ def test_extract_image_rejects_empty_payload() -> None:
             assert exc.status == 502
         else:
             raise AssertionError(f"payload {payload!r} should fail")
+
+
+async def test_discord_cog_uses_a_live_price_api_for_quote_questions() -> None:
+    """Discord must take the same verified-price path Telegram does."""
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        settings=SimpleNamespace(openai_api_key="test"),
+    )
+    cog = AI(bot)
+    cog.http = object()
+    cog.openai.ask = AsyncMock()
+    quote = ("Bitcoin (BTC) is **$68,000.00** on Coinbase.", [Source("Coinbase BTC quote", "u")])
+
+    with patch(
+        "kevin.cogs.ai.live_price_reply", new=AsyncMock(return_value=quote)
+    ) as fetch_price:
+        text, sources = await cog._ask_openai("what's the price of bitcoin")
+
+    fetch_price.assert_awaited_once()
+    cog.openai.ask.assert_not_awaited()
+    assert text == "Bitcoin (BTC) is **$68,000.00** on Coinbase."
+    assert sources[0].title == "Coinbase BTC quote"
+
+
+async def test_discord_cog_requires_sourced_search_for_non_price_questions() -> None:
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        settings=SimpleNamespace(openai_api_key="test"),
+    )
+    cog = AI(bot)
+    cog.http = object()
+    cog.openai.ask = AsyncMock(return_value=("answer", []))
+
+    await cog._ask_openai("what's the latest news about OpenAI")
+
+    assert cog.openai.ask.await_args.kwargs == {
+        "require_web_search": True,
+        "require_source_links": True,
+        "reject_native_feeds": True,
+    }

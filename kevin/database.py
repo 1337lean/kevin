@@ -226,6 +226,23 @@ CREATE TABLE IF NOT EXISTS ai_memory_settings (
     guild_id INTEGER PRIMARY KEY,
     enabled INTEGER NOT NULL DEFAULT 1
 );
+
+CREATE TABLE IF NOT EXISTS ai_memory_members (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (guild_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_memory_members_updated
+ON ai_memory_members(guild_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_memory_channel_state (
+    guild_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    last_mem0_message_id INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, channel_id)
+);
 """
 
 
@@ -354,6 +371,13 @@ class Database:
                 ),
             )
             await conn.execute(
+                "INSERT INTO ai_memory_members(guild_id, user_id, display_name) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(guild_id, user_id) DO UPDATE SET "
+                "display_name = excluded.display_name, updated_at = CURRENT_TIMESTAMP",
+                (guild_id, user_id, display_name[:100]),
+            )
+            await conn.execute(
                 "DELETE FROM ai_chat_messages WHERE guild_id = ? AND channel_id = ? "
                 "AND message_id NOT IN ("
                 "SELECT message_id FROM ai_chat_messages "
@@ -384,6 +408,35 @@ class Database:
             parameters,
         )
         return [dict(row) for row in reversed(rows)]
+
+    async def get_ai_memory_members(
+        self, guild_id: int, *, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        rows = await self.fetchall(
+            "SELECT user_id, display_name FROM ai_memory_members "
+            "WHERE guild_id = ? ORDER BY updated_at DESC LIMIT ?",
+            (guild_id, limit),
+        )
+        return [dict(row) for row in rows]
+
+    async def get_ai_memory_watermark(self, guild_id: int, channel_id: int) -> int:
+        row = await self.fetchone(
+            "SELECT last_mem0_message_id FROM ai_memory_channel_state "
+            "WHERE guild_id = ? AND channel_id = ?",
+            (guild_id, channel_id),
+        )
+        return int(row["last_mem0_message_id"]) if row else 0
+
+    async def set_ai_memory_watermark(
+        self, guild_id: int, channel_id: int, message_id: int
+    ) -> None:
+        await self.execute(
+            "INSERT INTO ai_memory_channel_state(guild_id, channel_id, last_mem0_message_id) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(guild_id, channel_id) DO UPDATE SET "
+            "last_mem0_message_id = MAX(last_mem0_message_id, excluded.last_mem0_message_id)",
+            (guild_id, channel_id, message_id),
+        )
 
     async def delete_ai_chat_message(self, message_id: int) -> None:
         await self.execute("DELETE FROM ai_chat_messages WHERE message_id = ?", (message_id,))
@@ -501,6 +554,12 @@ class Database:
                 await conn.execute(
                     "DELETE FROM ai_member_memories WHERE guild_id = ?", (guild_id,)
                 )
+                await conn.execute(
+                    "DELETE FROM ai_memory_members WHERE guild_id = ?", (guild_id,)
+                )
+                await conn.execute(
+                    "DELETE FROM ai_memory_channel_state WHERE guild_id = ?", (guild_id,)
+                )
             await conn.commit()
 
     async def get_ai_memory_opt_outs(self) -> set[tuple[int, int]]:
@@ -523,6 +582,10 @@ class Database:
                     "DELETE FROM ai_member_memories WHERE guild_id = ? AND user_id = ?",
                     (guild_id, user_id),
                 )
+                await conn.execute(
+                    "DELETE FROM ai_memory_members WHERE guild_id = ? AND user_id = ?",
+                    (guild_id, user_id),
+                )
             else:
                 await conn.execute(
                     "DELETE FROM ai_memory_opt_outs WHERE guild_id = ? AND user_id = ?",
@@ -541,6 +604,10 @@ class Database:
                 "DELETE FROM ai_member_memories WHERE guild_id = ? AND user_id = ?",
                 (guild_id, user_id),
             )
+            await conn.execute(
+                "DELETE FROM ai_memory_members WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            )
             await conn.commit()
 
     async def clear_ai_guild_memory(self, guild_id: int) -> None:
@@ -548,6 +615,10 @@ class Database:
             conn = self._conn()
             await conn.execute("DELETE FROM ai_chat_messages WHERE guild_id = ?", (guild_id,))
             await conn.execute("DELETE FROM ai_member_memories WHERE guild_id = ?", (guild_id,))
+            await conn.execute("DELETE FROM ai_memory_members WHERE guild_id = ?", (guild_id,))
+            await conn.execute(
+                "DELETE FROM ai_memory_channel_state WHERE guild_id = ?", (guild_id,)
+            )
             await conn.commit()
 
     async def add_case(

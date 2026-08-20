@@ -80,6 +80,67 @@ def test_observation_filter_skips_likely_private_content() -> None:
     assert AI._observable_content("mfa.abcdefghijklmnopqrstuvwxyz") is None
 
 
+def test_memory_name_matching_uses_complete_display_names() -> None:
+    assert AI._name_is_referenced("what does Alex like?", "Alex") is True
+    assert AI._name_is_referenced("what does Alexandra like?", "Alex") is False
+
+
+async def test_discord_prompt_retrieves_separate_mem0_profiles_for_named_people() -> None:
+    database = SimpleNamespace(
+        connection=object(),
+        ai_memory_enabled=AsyncMock(return_value=True),
+        get_ai_chat_messages=AsyncMock(return_value=[]),
+        get_ai_memory_members=AsyncMock(
+            return_value=[
+                {"user_id": 20, "display_name": "Alex"},
+                {"user_id": 30, "display_name": "Bea"},
+            ]
+        ),
+    )
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999, display_name="K"),
+        settings=SimpleNamespace(openai_api_key="test"),
+        db=database,
+    )
+    cog = AI(bot)
+    cog.memories = SimpleNamespace(
+        ready=True,
+        search_member=AsyncMock(
+            side_effect=lambda _guild, user, _query, **_kwargs: {
+                20: ["Likes chess"],
+                30: ["Likes cooperative games"],
+            }[user]
+        ),
+    )
+    guild = SimpleNamespace(id=10, default_role=object(), get_member=lambda _user_id: None)
+    channel = SimpleNamespace(
+        id=40,
+        permissions_for=lambda _role: SimpleNamespace(view_channel=True),
+    )
+    message = SimpleNamespace(
+        id=50,
+        guild=guild,
+        channel=channel,
+        author=SimpleNamespace(id=20, display_name="Alex"),
+    )
+
+    prompt = await cog._discord_prompt(message, "what does Bea like?", None)
+    context_json = prompt.split("<discord_context_json>\n", 1)[1].split(
+        "\n</discord_context_json>", 1
+    )[0]
+    profiles = json.loads(context_json)["server_member_notes"]
+
+    assert profiles == [
+        {"user_id": "20", "display_name": "Alex", "notes": ["Likes chess"]},
+        {
+            "user_id": "30",
+            "display_name": "Bea",
+            "notes": ["Likes cooperative games"],
+        },
+    ]
+    assert [call.args[1] for call in cog.memories.search_member.await_args_list] == [20, 30]
+
+
 def test_requires_web_search_detects_explicit_and_current_requests() -> None:
     assert requires_web_search("Search the web for this") is True
     assert requires_web_search("Can you look this up?") is True
@@ -332,48 +393,6 @@ async def test_openai_client_defaults_to_discord_style_automatic_web_search() ->
     assert "tool_choice" not in session.payload
     assert "must use web search" in INSTRUCTIONS
     assert "Do not claim that you searched" in INSTRUCTIONS
-
-
-async def test_openai_client_extracts_structured_member_memories_safely() -> None:
-    client = OpenAIChatClient("test-key", "test-model")
-    response = {
-        "output": [
-            {
-                "type": "message",
-                "content": [
-                    {
-                        "type": "output_text",
-                        "text": json.dumps(
-                            {
-                                "members": [
-                                    {
-                                        "user_id": "10",
-                                        "notes": [
-                                            "Likes cooperative games",
-                                            "Email is person@example.com",
-                                        ],
-                                    },
-                                    {"user_id": "999", "notes": ["Unknown person"]},
-                                ]
-                            }
-                        ),
-                    }
-                ],
-            }
-        ]
-    }
-    session = _FakeOpenAISession([response])
-    client.session = session
-
-    memories = await client.extract_member_memories(
-        [MemberMemory(10, "Alex", ())],
-        [ServerMessage(1, 10, "Alex", "I like cooperative games")],
-    )
-
-    assert memories == {10: ["Likes cooperative games"]}
-    assert session.payload["text"]["format"]["type"] == "json_schema"
-    assert session.payload["store"] is False
-    assert "public_chat_messages" in session.payload["input"]
 
 
 async def test_openai_client_source_link_mode_uses_url_backed_search() -> None:

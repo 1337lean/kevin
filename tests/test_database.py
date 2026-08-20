@@ -118,6 +118,25 @@ async def test_ai_chat_memory_is_bounded_and_server_scoped(database: Database) -
     assert (await database.get_ai_member_memory(11, 30))["notes"] == ["Likes chess"]
 
 
+async def test_ai_memory_tracks_member_names_and_mem0_watermarks(database: Database) -> None:
+    await database.record_ai_chat_message(
+        10, 20, 1, 30, "Alex", "I like co-op games", "2026-01-01T00:00:00+00:00"
+    )
+    await database.record_ai_chat_message(
+        10, 20, 2, 30, "Alexandra", "call me Alex", "2026-01-02T00:00:00+00:00"
+    )
+
+    assert await database.get_ai_memory_members(10) == [
+        {"user_id": 30, "display_name": "Alexandra"}
+    ]
+    assert await database.get_ai_memory_watermark(10, 20) == 0
+
+    await database.set_ai_memory_watermark(10, 20, 2)
+    await database.set_ai_memory_watermark(10, 20, 1)
+
+    assert await database.get_ai_memory_watermark(10, 20) == 2
+
+
 async def test_ai_memory_opt_out_erases_user_data(database: Database) -> None:
     await database.record_ai_chat_message(
         10, 20, 1, 30, "Alex", "I like co-op games", "2026-01-01T00:00:00+00:00"
@@ -129,6 +148,7 @@ async def test_ai_memory_opt_out_erases_user_data(database: Database) -> None:
     assert (10, 30) in await database.get_ai_memory_opt_outs()
     assert await database.get_ai_member_memory(10, 30) is None
     assert await database.get_ai_chat_messages(10, 20) == []
+    assert await database.get_ai_memory_members(10) == []
 
     await database.record_ai_chat_message(
         10, 20, 2, 30, "Alex", "late message", "2026-01-02T00:00:00+00:00"
@@ -154,6 +174,7 @@ async def test_disabling_server_ai_memory_erases_observations_and_notes(
     assert await database.ai_memory_enabled(10) is False
     assert await database.get_ai_chat_messages(10, 20) == []
     assert await database.get_ai_member_memory(10, 30) is None
+    assert await database.get_ai_memory_members(10) == []
 
     await database.record_ai_chat_message(
         10, 20, 2, 30, "Alex", "late message", "2026-01-02T00:00:00+00:00"

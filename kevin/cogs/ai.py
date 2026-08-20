@@ -5,6 +5,7 @@ import contextlib
 import io
 import logging
 import re
+from pathlib import Path
 from typing import Literal
 
 import aiohttp
@@ -18,6 +19,7 @@ from kevin.market_data import (
     live_price_reply,
     requested_price_lookup,
 )
+from kevin.memory import Mem0MemoryStore, Mem0StoreError
 from kevin.openai_chat import (
     MemberMemory,
     OpenAIAPIError,
@@ -25,6 +27,7 @@ from kevin.openai_chat import (
     ServerMessage,
     Source,
     requires_web_search,
+    safe_memory_note,
     with_discord_context,
     with_reply_context,
 )
@@ -38,6 +41,7 @@ MAX_DISCORD_LENGTH = 2_000
 MAX_SOURCE_LINE_LENGTH = 900
 MAX_STORED_MESSAGES_PER_CHANNEL = 200
 MEMORY_REFRESH_MESSAGES = 24
+MAX_MEMORY_PROFILES_PER_PROMPT = 4
 
 _PRIVATE_CONTENT_RE = re.compile(
     r"(?:\b(?:password|passcode|api[ _-]?key|private[ _-]?key|seed phrase|"
@@ -98,8 +102,19 @@ class AI(commands.Cog):
             bot.settings.openai_api_key or "",
             getattr(bot.settings, "openai_image_model", "gpt-image-1"),
         )
+        self.memories = Mem0MemoryStore(
+            bot.settings.openai_api_key or "",
+            getattr(bot.settings, "mem0_path", Path("data/mem0")),
+            getattr(bot.settings, "mem0_llm_model", "gpt-4.1-mini"),
+            getattr(
+                bot.settings,
+                "mem0_embedding_model",
+                "text-embedding-3-small",
+            ),
+        )
         self.request_slots = asyncio.Semaphore(3)
         self.memory_slots = asyncio.Semaphore(1)
+        self.memory_search_slots = asyncio.Semaphore(3)
         self.image_slots = asyncio.Semaphore(2)
         self.http: aiohttp.ClientSession | None = None
         self.memory_opt_outs: set[tuple[int, int]] = set()
@@ -113,6 +128,13 @@ class AI(commands.Cog):
         if self.bot.settings.openai_api_key:
             await self.openai.start()
             await self.images.start()
+            try:
+                await self.memories.start()
+            except Mem0StoreError:
+                log.exception(
+                    "Mem0 initialization failed; recent context remains available but "
+                    "durable memory will be unavailable until restart"
+                )
 
     async def cog_unload(self) -> None:
         tasks = list(self.memory_tasks)
@@ -122,6 +144,7 @@ class AI(commands.Cog):
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         self.memory_tasks.clear()
+        await self.memories.close()
         await self.openai.close()
         await self.images.close()
         if self.http is not None:
@@ -248,14 +271,39 @@ class AI(commands.Cog):
         )
 
     @staticmethod
-    def _member_memory(row: dict[str, object]) -> MemberMemory:
-        raw_notes = row.get("notes", [])
-        notes = tuple(str(note) for note in raw_notes) if isinstance(raw_notes, list) else ()
-        return MemberMemory(
-            user_id=int(row["user_id"]),
-            display_name=str(row["display_name"]),
-            notes=notes,
-        )
+    def _name_is_referenced(question: str, display_name: str) -> bool:
+        name = " ".join(display_name.casefold().split()).strip("@")
+        if len(name) < 2:
+            return False
+        return re.search(rf"(?<!\w){re.escape(name)}(?!\w)", question.casefold()) is not None
+
+    async def _search_memory_profile(
+        self,
+        guild_id: int,
+        user_id: int,
+        display_name: str,
+        question: str,
+    ) -> MemberMemory | None:
+        try:
+            async with self.memory_search_slots:
+                raw_notes = await self.memories.search_member(
+                    guild_id, user_id, question, limit=6
+                )
+        except Mem0StoreError as exc:
+            log.warning("Mem0 retrieval failed: %s", exc)
+            return None
+
+        notes: list[str] = []
+        seen: set[str] = set()
+        for raw_note in raw_notes:
+            note = safe_memory_note(raw_note)
+            if note is None or note.casefold() in seen:
+                continue
+            notes.append(note)
+            seen.add(note.casefold())
+        if not notes:
+            return None
+        return MemberMemory(user_id, display_name, tuple(notes))
 
     async def _discord_prompt(
         self,
@@ -280,32 +328,48 @@ class AI(commands.Cog):
                 for row in rows
                 if (guild_id, int(row["user_id"])) not in self.memory_opt_outs
             ]
-            memory_rows = await self.bot.db.get_ai_member_memories(guild_id)
-            recent_ids = list(dict.fromkeys(item.user_id for item in reversed(recent)))
-            referenced_ids = {
-                int(match)
-                for match in re.findall(r"<@!?(\d+)>", question)
-            }
-            question_folded = question.casefold()
-            referenced_ids.update(
-                int(row["user_id"])
-                for row in memory_rows
-                if len(str(row["display_name"])) >= 2
-                and str(row["display_name"]).casefold() in question_folded
-            )
-            priority = {
-                user_id: i + 2 for i, user_id in enumerate(recent_ids)
-            }
-            priority.update({user_id: 1 for user_id in referenced_ids})
-            priority[speaker_id] = 0
-            memory_rows.sort(
-                key=lambda row: priority.get(int(row["user_id"]), len(priority) + 1)
-            )
-            profiles = [
-                self._member_memory(row)
-                for row in memory_rows
-                if (guild_id, int(row["user_id"])) not in self.memory_opt_outs
-            ]
+            if self.memories.ready:
+                identity_rows = await self.bot.db.get_ai_memory_members(guild_id)
+                identity_names = {
+                    int(row["user_id"]): str(row["display_name"])
+                    for row in identity_rows
+                }
+                identity_names[speaker_id] = speaker_name
+                target_ids = [speaker_id]
+                target_ids.extend(
+                    int(match) for match in re.findall(r"<@!?(\d+)>", question)
+                )
+                target_ids.extend(
+                    user_id
+                    for user_id, display_name in identity_names.items()
+                    if self._name_is_referenced(question, display_name)
+                )
+                target_ids = list(dict.fromkeys(target_ids))[
+                    :MAX_MEMORY_PROFILES_PER_PROMPT
+                ]
+
+                profile_requests = []
+                for user_id in target_ids:
+                    if (guild_id, user_id) in self.memory_opt_outs:
+                        continue
+                    display_name = identity_names.get(user_id)
+                    if display_name is None:
+                        get_member = getattr(message.guild, "get_member", None)
+                        member = get_member(user_id) if get_member is not None else None
+                        display_name = (
+                            self._display_name(member) if member is not None else str(user_id)
+                        )
+                    profile_requests.append(
+                        self._search_memory_profile(
+                            guild_id, user_id, display_name, question
+                        )
+                    )
+                if profile_requests:
+                    profiles = [
+                        profile
+                        for profile in await asyncio.gather(*profile_requests)
+                        if profile is not None
+                    ]
         return with_discord_context(
             question,
             speaker_id=speaker_id,
@@ -316,60 +380,73 @@ class AI(commands.Cog):
         )
 
     async def _refresh_memories(self, guild_id: int, channel_id: int) -> None:
-        if not self.bot.settings.openai_api_key or not await self._memory_enabled(guild_id):
+        if (
+            not self.bot.settings.openai_api_key
+            or not self.memories.ready
+            or not await self._memory_enabled(guild_id)
+        ):
             return
-        rows = await self.bot.db.get_ai_chat_messages(
-            guild_id, channel_id, limit=MEMORY_REFRESH_MESSAGES
-        )
-        messages = [
-            self._server_message(row)
-            for row in rows
-            if (guild_id, int(row["user_id"])) not in self.memory_opt_outs
-        ]
-        candidate_ids = list(
-            dict.fromkeys(
-                message.user_id
-                for message in reversed(messages)
-                if not message.is_bot and _MEMORY_CANDIDATE_RE.search(message.content)
+        async with self.memory_slots:
+            # Erasure commands use this same lock. Recheck state after acquiring it so
+            # a queued refresh cannot recreate data that was just forgotten.
+            if not self.memories.ready or not await self._memory_enabled(guild_id):
+                return
+            rows = await self.bot.db.get_ai_chat_messages(
+                guild_id, channel_id, limit=MEMORY_REFRESH_MESSAGES
             )
-        )[:8]
-        if not candidate_ids:
-            return
+            watermark = await self.bot.db.get_ai_memory_watermark(guild_id, channel_id)
+            new_rows = [row for row in rows if int(row["message_id"]) > watermark]
+            if not new_rows:
+                return
+            latest_message_id = max(int(row["message_id"]) for row in new_rows)
+            messages = [
+                self._server_message(row)
+                for row in new_rows
+                if (guild_id, int(row["user_id"])) not in self.memory_opt_outs
+            ]
+            candidate_ids = list(
+                dict.fromkeys(
+                    message.user_id
+                    for message in reversed(messages)
+                    if not message.is_bot and _MEMORY_CANDIDATE_RE.search(message.content)
+                )
+            )[:8]
+            if not candidate_ids:
+                await self.bot.db.set_ai_memory_watermark(
+                    guild_id, channel_id, latest_message_id
+                )
+                return
 
-        existing_rows = await self.bot.db.get_ai_member_memories(guild_id)
-        existing = {int(row["user_id"]): self._member_memory(row) for row in existing_rows}
-        latest_names = {
-            message.user_id: message.display_name
-            for message in messages
-            if message.user_id in candidate_ids
-        }
-        members = [
-            existing.get(
-                user_id,
-                MemberMemory(user_id, latest_names.get(user_id, str(user_id)), ()),
-            )
-            for user_id in candidate_ids
-        ]
-        try:
-            async with self.memory_slots, self.request_slots:
-                updates = await self.openai.extract_member_memories(members, messages)
-        except OpenAIAPIError as exc:
-            log.warning("OpenAI memory refresh failed (%s): %s", exc.status, exc)
-            return
-        for member in members:
-            if member.user_id not in updates:
-                continue
-            if (guild_id, member.user_id) in self.memory_opt_outs:
-                continue
-            await self.bot.db.replace_ai_member_memory(
-                guild_id,
-                member.user_id,
-                latest_names.get(member.user_id, member.display_name),
-                updates[member.user_id],
+            latest_names = {
+                message.user_id: message.display_name
+                for message in messages
+                if message.user_id in candidate_ids
+            }
+            try:
+                for user_id in candidate_ids:
+                    if (guild_id, user_id) in self.memory_opt_outs:
+                        continue
+                    await self.memories.add_member_messages(
+                        guild_id,
+                        user_id,
+                        latest_names.get(user_id, str(user_id)),
+                        (
+                            item.content
+                            for item in messages
+                            if item.user_id == user_id
+                            and not item.is_bot
+                            and _MEMORY_CANDIDATE_RE.search(item.content)
+                        ),
+                    )
+            except Mem0StoreError as exc:
+                log.warning("Mem0 refresh failed: %s", exc)
+                return
+            await self.bot.db.set_ai_memory_watermark(
+                guild_id, channel_id, latest_message_id
             )
 
     def _schedule_memory_refresh(self, guild_id: int, channel_id: int) -> None:
-        if not self._has_memory_database():
+        if not self._has_memory_database() or not self.memories.ready:
             return
         task = asyncio.create_task(self._run_memory_refresh(guild_id, channel_id))
         self.memory_tasks.add(task)
@@ -487,8 +564,19 @@ class AI(commands.Cog):
         if self._has_memory_database():
             await self.bot.db.delete_ai_chat_messages(payload.message_ids)
 
-    async def _send_memory_message(self, ctx: commands.Context, content: str) -> None:
-        await ctx.send(content, ephemeral=ctx.interaction is not None)
+    async def _send_memory_message(
+        self, ctx: commands.Context, content: str, *, private: bool = False
+    ) -> None:
+        if ctx.interaction is not None:
+            await ctx.send(content, ephemeral=True)
+            return
+        if private:
+            try:
+                await ctx.author.send(content)
+            except discord.HTTPException:
+                await ctx.send("I couldn't DM your memory to you. Try the slash command instead.")
+            return
+        await ctx.send(content)
 
     @commands.hybrid_group(
         name="memory",
@@ -508,21 +596,62 @@ class AI(commands.Cog):
                 ctx, "Memory is off for you in this server. Use `/memory on` to opt back in."
             )
             return
-        profile = await self.bot.db.get_ai_member_memory(guild_id, ctx.author.id)
-        notes = profile.get("notes", []) if profile else []
+        if not self.memories.ready:
+            await self._send_memory_message(
+                ctx,
+                "Durable Mem0 memory is unavailable right now. Ask an admin to check the bot "
+                "logs and restart me.",
+                private=True,
+            )
+            return
+        try:
+            raw_notes = await self.memories.list_member(guild_id, ctx.author.id)
+        except Mem0StoreError as exc:
+            log.warning("Mem0 list failed: %s", exc)
+            await self._send_memory_message(
+                ctx,
+                "I couldn't read your durable memory right now. Try again shortly.",
+                private=True,
+            )
+            return
+        notes = [note for raw_note in raw_notes if (note := safe_memory_note(raw_note))]
         if not notes:
             await self._send_memory_message(
                 ctx,
                 "I don't have any durable notes about you yet. I may still use a small amount "
                 "of recent public channel context when you talk to me.",
+                private=True,
             )
             return
-        note_lines = "\n".join(f"• {note}" for note in notes)
-        await self._send_memory_message(ctx, f"Here’s what I remember about you here:\n{note_lines}")
+        heading = "Here’s what I remember about you in this server:\n"
+        lines: list[str] = []
+        for note in notes:
+            line = f"• {note}"
+            if len(heading) + len("\n".join([*lines, line])) > MAX_DISCORD_LENGTH:
+                lines.append("…")
+                break
+            lines.append(line)
+        await self._send_memory_message(
+            ctx, heading + "\n".join(lines), private=True
+        )
 
     @memory.command(name="forget", description="Erase your notes and recent chat observations")
     async def memory_forget(self, ctx: commands.Context) -> None:
-        await self.bot.db.forget_ai_user(ctx.guild.id, ctx.author.id)
+        erased = True
+        async with self.memory_slots:
+            await self.bot.db.forget_ai_user(ctx.guild.id, ctx.author.id)
+            try:
+                await self.memories.forget_member(ctx.guild.id, ctx.author.id)
+            except Mem0StoreError as exc:
+                erased = False
+                log.warning("Mem0 member erase failed: %s", exc)
+        if not erased:
+            await self._send_memory_message(
+                ctx,
+                "I erased your recent observations, but the durable Mem0 erase failed. "
+                "Please retry after an admin restarts me.",
+            )
+            return
         await self._send_memory_message(
             ctx,
             "Done—I erased your notes and recent chat observations in this server. "
@@ -532,8 +661,22 @@ class AI(commands.Cog):
     @memory.command(name="off", description="Opt out and erase your AI memory")
     async def memory_off(self, ctx: commands.Context) -> None:
         key = (ctx.guild.id, ctx.author.id)
-        await self.bot.db.set_ai_memory_opt_out(*key, opted_out=True)
-        self.memory_opt_outs.add(key)
+        erased = True
+        async with self.memory_slots:
+            await self.bot.db.set_ai_memory_opt_out(*key, opted_out=True)
+            self.memory_opt_outs.add(key)
+            try:
+                await self.memories.forget_member(*key)
+            except Mem0StoreError as exc:
+                erased = False
+                log.warning("Mem0 opt-out erase failed: %s", exc)
+        if not erased:
+            await self._send_memory_message(
+                ctx,
+                "Memory is off and I won't use or add data for you. The durable Mem0 erase "
+                "failed, though, so please retry `/memory off` after an admin restarts me.",
+            )
+            return
         await self._send_memory_message(
             ctx,
             "Memory is off for you here, and I erased your saved notes and observations. "
@@ -542,9 +685,17 @@ class AI(commands.Cog):
 
     @memory.command(name="on", description="Opt back into personalized AI memory")
     async def memory_on(self, ctx: commands.Context) -> None:
+        if not self.memories.ready:
+            await self._send_memory_message(
+                ctx,
+                "I can't turn durable memory on while Mem0 is unavailable. Ask an admin to "
+                "check the bot logs and restart me.",
+            )
+            return
         key = (ctx.guild.id, ctx.author.id)
-        await self.bot.db.set_ai_memory_opt_out(*key, opted_out=False)
-        self.memory_opt_outs.discard(key)
+        async with self.memory_slots:
+            await self.bot.db.set_ai_memory_opt_out(*key, opted_out=False)
+            self.memory_opt_outs.discard(key)
         await self._send_memory_message(
             ctx, "Memory is on for you here. I’ll start fresh from future public messages."
         )
@@ -554,9 +705,33 @@ class AI(commands.Cog):
     @owner_or_guild_permissions(manage_guild=True)
     async def memory_server(self, ctx: commands.Context, enabled: bool) -> None:
         guild_id = ctx.guild.id
-        await self.bot.db.set_ai_memory_enabled(guild_id, enabled)
-        self.memory_enabled_cache[guild_id] = enabled
-        detail = "enabled" if enabled else "disabled and all server AI memory was erased"
+        if enabled and not self.memories.ready:
+            await self._send_memory_message(
+                ctx,
+                "I can't enable durable memory while Mem0 is unavailable. Check the bot logs "
+                "and restart me first.",
+            )
+            return
+        if enabled:
+            async with self.memory_slots:
+                await self.bot.db.set_ai_memory_enabled(guild_id, True)
+                self.memory_enabled_cache[guild_id] = True
+            await self._send_memory_message(ctx, "AI memory is now enabled.")
+            return
+        erased = True
+        async with self.memory_slots:
+            await self.bot.db.set_ai_memory_enabled(guild_id, False)
+            self.memory_enabled_cache[guild_id] = False
+            try:
+                await self.memories.forget_guild(guild_id)
+            except Mem0StoreError as exc:
+                erased = False
+                log.warning("Mem0 server erase failed: %s", exc)
+        detail = (
+            "disabled and all server AI memory was erased"
+            if erased
+            else "disabled, but the durable Mem0 erase failed; retry after restarting me"
+        )
         await self._send_memory_message(ctx, f"AI memory is now {detail}.")
 
     @commands.hybrid_command(description="Generate an image with OpenAI")

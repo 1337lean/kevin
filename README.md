@@ -26,7 +26,7 @@ on OpenAI conversation and web-backed answers.
 - **Fun:** interactive trivia with stats and leaderboards, 8-ball, dice notation,
   choices, rock-paper-scissors, jokes, compatibility, ratings, mock text, and social actions.
 - **AI mentions and memory:** ping K for a short OpenAI answer with optional web search,
-  speaker-aware recent channel context, and small server-scoped member notes.
+  speaker-aware recent channel context, and durable per-member Mem0 memory.
 
 Every command is available as a slash command. Most also support the configurable text
 prefix (default: `k`). Both `k help` and `khelp` work. Run `/help` after inviting K
@@ -139,6 +139,8 @@ Put an OpenAI API key in `.env`, then restart K:
 ```text
 OPENAI_API_KEY=your-key-here
 OPENAI_MODEL=gpt-5.6-luna
+MEM0_LLM_MODEL=gpt-4.1-mini
+MEM0_EMBEDDING_MODEL=text-embedding-3-small
 ```
 
 Anyone in a server can then ask a question by pinging the bot, for example
@@ -151,24 +153,36 @@ or Telegram, and never commit `.env`.
 
 ### Discord AI memory
 
-AI memory is enabled by default. K keeps at most 200 recent messages per channel that
-the server's `@everyone` role can view in the local SQLite database, and sends only the
-latest 24 from the current channel when someone talks to it. Every context item carries
-the author's Discord user ID and display name, so two people in the same conversation
-stay distinct. Messages that look like credentials, email addresses, or long
-account/card numbers are not stored; other bots, DMs, and private channels are excluded.
-K's own recent answers are retained with an explicit assistant label so later questions
-can refer back to the conversation.
+AI memory is enabled by default. K observes messages in channels that the server's
+`@everyone` role can view even when nobody tags it. It keeps at most 200 recent messages
+per channel in local SQLite and sends only the latest 24 from the current channel when
+someone talks to it. Every context item carries the author's immutable Discord user ID
+and current display name, so two people in the same conversation stay distinct. Messages
+that look like credentials, email addresses, or long account/card numbers are not stored;
+other bots, DMs, and private channels are excluded. K's own recent answers are retained
+with an explicit assistant label so later questions can refer back to the conversation.
 
-After an AI reply, K may condense explicit, non-sensitive self-disclosures from that
-recent context into at most eight short notes per member. It does not intentionally keep
-health, financial, religious, political, sexual, contact, exact-location, credential, or
-alleged-wrongdoing details. Notes and observations never cross server boundaries.
+Durable personalization uses the self-hosted Mem0 Python library with an on-disk Qdrant
+store under `data/mem0` (change it with `MEM0_PATH`). Mem0 is scoped to one Discord user
+inside one server, so the same person has separate memory in different servers and no two
+members share a profile. It stores evolving facts rather than a fixed number of chat
+messages: relevant facts are added, merged, updated, or removed over time. For cost
+control, newly observed public-chat batches are condensed after K answers, using
+`MEM0_LLM_MODEL`; retrieval uses `MEM0_EMBEDDING_MODEL`. These are additional OpenAI API
+calls, but no hosted Mem0 account or `MEM0_API_KEY` is needed.
+
+K asks Mem0 to retain only explicit, non-sensitive self-disclosures such as preferences,
+hobbies, pets, or recurring projects. It does not intentionally keep health, financial,
+religious, political, sexual, contact, precise-location, credential, unique-identifier,
+or alleged-wrongdoing details. Retrieved memories pass a second sensitive-data filter
+before reaching the answer prompt. Memories and observations never cross server
+boundaries. Mem0 anonymous telemetry is disabled by default; `MEM0_TELEMETRY=false` is
+also included in `.env.example`.
 
 Members control their own memory:
 
 ```text
-/memory show         Show your saved notes privately
+/memory show         Show your Mem0 memories privately
 /memory forget       Erase current notes and observations, but keep memory on
 /memory off          Erase your data and opt out in this server
 /memory on           Opt back in, starting fresh
@@ -268,9 +282,11 @@ password. Respect source terms and copyright rules.
 
 ## Data and operations
 
-K stores state in `data/kevin.sqlite3` by default. SQLite WAL mode is enabled. Back
-up the database file and its `-wal` companion while the bot is running, or stop the bot
-before copying the main file. Change the location with `KEVIN_DATABASE`.
+K stores general state in `data/kevin.sqlite3` and durable Mem0 state in `data/mem0` by
+default. SQLite WAL mode is enabled. Back up the database file and its `-wal` companion
+while the bot is running, or stop the bot before copying the main file. Stop the bot
+before copying the whole Mem0 directory so its Qdrant store is consistent. Change the
+locations with `KEVIN_DATABASE` and `MEM0_PATH`.
 
 Never commit `.env`, cookies, the SQLite database, or a Discord token. If a token is
 exposed, regenerate it immediately in the developer portal.
@@ -295,6 +311,8 @@ The VPS keeps runtime state outside Git: `.env`, `data/`, `.venv/`, `bin/`, and
 `vendor/` are preserved during deployment. Before each restart, the deploy script uses
 SQLite's online backup API to save a consistent database copy under
 `data/backups/`; the ten newest backups are retained.
+Those automatic backups cover `kevin.sqlite3`; `data/mem0` is preserved during deploys
+but should be backed up separately while the bot is stopped.
 
 The workflow expects these GitHub Actions secrets:
 

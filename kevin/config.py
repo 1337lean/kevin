@@ -35,6 +35,9 @@ class Settings:
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.6-luna"
     openai_image_model: str = "gpt-image-1"
+    mem0_path: Path = Path("data/mem0")
+    mem0_llm_model: str = "gpt-4.1-mini"
+    mem0_embedding_model: str = "text-embedding-3-small"
     log_level: str = "INFO"
 
     @classmethod
@@ -63,6 +66,13 @@ class Settings:
             or "gpt-5.6-luna",
             openai_image_model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1").strip()
             or "gpt-image-1",
+            mem0_path=Path(os.getenv("MEM0_PATH", "data/mem0")),
+            mem0_llm_model=os.getenv("MEM0_LLM_MODEL", "gpt-4.1-mini").strip()
+            or "gpt-4.1-mini",
+            mem0_embedding_model=os.getenv(
+                "MEM0_EMBEDDING_MODEL", "text-embedding-3-small"
+            ).strip()
+            or "text-embedding-3-small",
             log_level=os.getenv("KEVIN_LOG_LEVEL", "INFO"),
         )
 

@@ -10,6 +10,7 @@ from kevin.cogs.economy import (
     CARD_SUITS,
     MAX_BET,
     BetConverter,
+    BlackjackView,
     Economy,
     GrantAmountConverter,
     KashAmountConverter,
@@ -25,6 +26,17 @@ from kevin.cogs.economy import (
 
 def hand(*ranks: str) -> list[PlayingCard]:
     return [PlayingCard(rank, "♠") for rank in ranks]
+
+
+def blackjack_view(*, bet: int = 100, balance: int = 900) -> BlackjackView:
+    return BlackjackView(
+        SimpleNamespace(db=SimpleNamespace(change_balance=AsyncMock(return_value=balance - bet))),
+        SimpleNamespace(id=456, display_name="tester"),
+        123,
+        bet,
+        balance,
+        lambda: None,
+    )
 
 
 def test_blackjack_deck_is_standard_and_unique() -> None:
@@ -46,6 +58,112 @@ def test_blackjack_value_handles_soft_and_hard_aces() -> None:
 def test_only_two_card_twenty_one_is_a_natural_blackjack() -> None:
     assert has_blackjack(hand("A", "K"))
     assert not has_blackjack(hand("7", "7", "7"))
+
+
+def test_split_button_requires_a_matching_pair_and_an_extra_stake() -> None:
+    game = blackjack_view()
+    game.hands = [hand("8", "9")]
+    game.update_controls()
+    assert game.split.disabled
+
+    game.hands = [hand("8", "8")]
+    game.update_controls()
+    assert not game.split.disabled
+
+    game.hands = [hand("10", "K")]
+    game.update_controls()
+    assert not game.split.disabled
+
+    game.balance = 99
+    game.update_controls()
+    assert game.split.disabled
+
+
+async def test_split_charges_a_matching_stake_and_deals_two_hands() -> None:
+    game = blackjack_view()
+    game.hands = [hand("8", "8")]
+    game.deck = hand("3", "2")  # pop() deals the 2 to hand one, then the 3 to hand two
+    game.update_controls()
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock())
+    )
+
+    await game.split.callback(interaction)
+
+    assert [[card.rank for card in cards] for cards in game.hands] == [["8", "2"], ["8", "3"]]
+    assert game.hand_bets == [100, 100]
+    assert game.bet == 200
+    assert game.active_hand == 0
+    game.bot.db.change_balance.assert_awaited_once_with(123, 456, -100)
+    interaction.response.edit_message.assert_awaited_once()
+
+
+async def test_standing_first_split_hand_moves_to_second_hand() -> None:
+    game = blackjack_view()
+    game.hands = [hand("10", "8"), hand("9", "7")]
+    game.hand_bets = [100, 100]
+    game.bet = 200
+    game.update_controls()
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock())
+    )
+
+    await game.stand.callback(interaction)
+
+    assert game.active_hand == 1
+    assert not game.finished
+    interaction.response.edit_message.assert_awaited_once()
+
+
+async def test_double_down_after_split_only_doubles_the_active_hand() -> None:
+    game = blackjack_view()
+    game.hands = [hand("8", "3"), hand("8", "4")]
+    game.hand_bets = [100, 100]
+    game.bet = 200
+    game.deck = hand("6")
+    game.update_controls()
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock())
+    )
+
+    await game.double_down.callback(interaction)
+
+    assert game.hand_bets == [200, 100]
+    assert game.bet == 300
+    assert game.active_hand == 1
+    game.bot.db.change_balance.assert_awaited_once_with(123, 456, -100)
+
+
+async def test_split_aces_receive_one_card_each_and_then_resolve() -> None:
+    game = blackjack_view()
+    game.hands = [hand("A", "A")]
+    game.dealer = hand("10", "7")
+    game.deck = hand("9", "10")
+    game.update_controls()
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock())
+    )
+
+    await game.split.callback(interaction)
+
+    assert [len(cards) for cards in game.hands] == [2, 2]
+    assert game.finished
+    interaction.response.edit_message.assert_awaited_once()
+
+
+async def test_split_hands_are_settled_separately_against_one_dealer_hand() -> None:
+    game = blackjack_view()
+    game.hands = [hand("10", "Q"), hand("10", "8")]
+    game.hand_bets = [100, 100]
+    game.bet = 200
+    game.dealer = hand("10", "9")
+
+    payout, title, result = await game.play_dealer()
+
+    assert payout == 200  # the 20 wins and the 18 loses, for an even overall result
+    assert title == "🃏 Blackjack · Split results"
+    assert "Hand 1" in result and "Hand 2" in result
+    assert "Overall result: even" in result
 
 
 def test_blackjack_has_text_and_slash_shortcuts() -> None:

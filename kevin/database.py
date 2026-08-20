@@ -197,7 +197,8 @@ CREATE TABLE IF NOT EXISTS ai_chat_messages (
     user_id INTEGER NOT NULL,
     display_name TEXT NOT NULL,
     content TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    reply_to_message_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_ai_chat_channel
 ON ai_chat_messages(guild_id, channel_id, message_id DESC);
@@ -257,6 +258,13 @@ class Database:
         self.connection = await aiosqlite.connect(self.path)
         self.connection.row_factory = aiosqlite.Row
         await self.connection.executescript(SCHEMA)
+        columns = await (
+            await self.connection.execute("PRAGMA table_info(ai_chat_messages)")
+        ).fetchall()
+        if "reply_to_message_id" not in {str(column[1]) for column in columns}:
+            await self.connection.execute(
+                "ALTER TABLE ai_chat_messages ADD COLUMN reply_to_message_id INTEGER"
+            )
         await self.connection.commit()
 
     async def close(self) -> None:
@@ -339,6 +347,7 @@ class Database:
         created_at: str,
         *,
         channel_limit: int = 200,
+        reply_to_message_id: int | None = None,
     ) -> None:
         """Store one observable chat message and bound storage per channel."""
         async with self._lock:
@@ -358,8 +367,9 @@ class Database:
                 return
             await conn.execute(
                 "INSERT OR IGNORE INTO ai_chat_messages("
-                "message_id, guild_id, channel_id, user_id, display_name, content, created_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "message_id, guild_id, channel_id, user_id, display_name, content, created_at, "
+                "reply_to_message_id"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     message_id,
                     guild_id,
@@ -368,6 +378,7 @@ class Database:
                     display_name[:100],
                     content[:1_000],
                     created_at,
+                    reply_to_message_id,
                 ),
             )
             await conn.execute(
@@ -398,13 +409,22 @@ class Database:
         parameters: list[Any] = [guild_id, channel_id]
         exclusion = ""
         if exclude_message_id is not None:
-            exclusion = " AND message_id != ?"
+            exclusion = " AND message.message_id != ?"
             parameters.append(exclude_message_id)
         parameters.append(limit)
         rows = await self.fetchall(
-            "SELECT message_id, user_id, display_name, content, created_at "
-            "FROM ai_chat_messages WHERE guild_id = ? AND channel_id = ?"
-            f"{exclusion} ORDER BY message_id DESC LIMIT ?",
+            "SELECT message.message_id, message.user_id, message.display_name, "
+            "message.content, message.created_at, message.reply_to_message_id, "
+            "replied.user_id AS reply_to_user_id, "
+            "replied.display_name AS reply_to_display_name, "
+            "replied.content AS reply_to_content "
+            "FROM ai_chat_messages AS message "
+            "LEFT JOIN ai_chat_messages AS replied "
+            "ON replied.message_id = message.reply_to_message_id "
+            "AND replied.guild_id = message.guild_id "
+            "AND replied.channel_id = message.channel_id "
+            "WHERE message.guild_id = ? AND message.channel_id = ?"
+            f"{exclusion} ORDER BY message.message_id DESC LIMIT ?",
             parameters,
         )
         return [dict(row) for row in reversed(rows)]

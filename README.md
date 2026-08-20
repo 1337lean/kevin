@@ -158,7 +158,9 @@ when nobody tags it, including channels exposed through a Member role instead of
 `@everyone`. It keeps at most 200 recent messages per channel in local SQLite and sends
 only the latest 24 from the current channel when someone talks to it. Every context item
 carries the author's immutable Discord user ID and current display name, so two people in
-the same conversation stay distinct. Messages that look like credentials, email
+the same conversation stay distinct. Discord reply relationships are retained too, so K
+can identify the exact stored message someone replied to instead of guessing. Messages
+that look like credentials, email
 addresses, or long account/card numbers are not stored; other bots and DMs are excluded.
 K's own recent answers are retained with an explicit assistant label so later questions
 can refer back to the conversation. Because this includes restricted server channels K

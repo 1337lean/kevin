@@ -59,11 +59,49 @@ def test_discord_context_keeps_speakers_and_notes_separate() -> None:
     context = json.loads(context_json)
 
     assert context["latest_speaker"] == {"user_id": "20", "display_name": "Bea"}
+    assert context["recent_public_channel_messages"][0]["message_id"] == "1"
     assert context["recent_public_channel_messages"][0]["user_id"] == "10"
     assert context["recent_public_channel_messages"][0]["author_type"] == "member"
+    assert context["recent_public_channel_messages"][0]["reply_to_message"] is None
     assert context["recent_public_channel_messages"][1]["user_id"] == "20"
     assert context["server_member_notes"][0]["notes"] == ["Likes chess"]
     assert context["latest_message"] == "what game should we play?"
+
+
+def test_discord_context_includes_exact_reply_target() -> None:
+    prompt = with_discord_context(
+        "what did Piss reply to?",
+        speaker_id=20,
+        speaker_name="Learn",
+        recent_messages=(
+            ServerMessage(100, 10, "Alex", "The original message"),
+            ServerMessage(
+                101,
+                30,
+                "Piss",
+                "Thats dope",
+                reply_to_message_id=100,
+                reply_to_user_id=10,
+                reply_to_display_name="Alex",
+                reply_to_content="The original message",
+            ),
+        ),
+    )
+
+    context_json = prompt.split("<discord_context_json>\n", 1)[1].split(
+        "\n</discord_context_json>", 1
+    )[0]
+    context = json.loads(context_json)
+    reply_target = context["recent_public_channel_messages"][1]["reply_to_message"]
+
+    assert reply_target == {
+        "message_id": "100",
+        "user_id": "10",
+        "display_name": "Alex",
+        "author_type": "member",
+        "content": "The original message",
+    }
+    assert "instead of inferring or guessing" in prompt
 
 
 def test_memory_note_filter_rejects_sensitive_details() -> None:
@@ -78,6 +116,38 @@ def test_observation_filter_skips_likely_private_content() -> None:
     assert AI._observable_content("email me at person@example.com") is None
     assert AI._observable_content("token: super-secret") is None
     assert AI._observable_content("mfa.abcdefghijklmnopqrstuvwxyz") is None
+
+
+async def test_observation_records_discord_reply_message_id() -> None:
+    database = SimpleNamespace(
+        connection=object(),
+        ai_memory_enabled=AsyncMock(return_value=True),
+        record_ai_chat_message=AsyncMock(),
+    )
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        settings=SimpleNamespace(openai_api_key="test"),
+        db=database,
+    )
+    cog = AI(bot)
+    guild = SimpleNamespace(id=10, me=SimpleNamespace(id=999))
+    channel = SimpleNamespace(
+        id=20,
+        permissions_for=lambda _member: SimpleNamespace(view_channel=True),
+    )
+    message = SimpleNamespace(
+        id=101,
+        guild=guild,
+        channel=channel,
+        author=SimpleNamespace(id=30, display_name="Piss"),
+        content="Thats dope",
+        created_at=SimpleNamespace(isoformat=lambda: "2026-01-01T00:01:00+00:00"),
+        reference=SimpleNamespace(message_id=100),
+    )
+
+    await cog._record_observation(message)
+
+    assert database.record_ai_chat_message.await_args.kwargs["reply_to_message_id"] == 100
 
 
 def test_memory_name_matching_uses_complete_display_names() -> None:
@@ -175,16 +245,88 @@ async def test_discord_prompt_retrieves_separate_mem0_profiles_for_named_people(
     ]
     assert context["recent_public_channel_messages"] == [
         {
+            "message_id": "40",
             "user_id": "30",
             "display_name": "Bea",
             "author_type": "member",
             "content": "We should play co-op",
+            "reply_to_message": None,
         }
     ]
     database.get_ai_chat_messages.assert_awaited_once_with(
         10, 40, limit=24, exclude_message_id=50
     )
     assert [call.args[1] for call in cog.memories.search_member.await_args_list] == [20, 30]
+
+
+async def test_discord_prompt_recovers_reply_target_from_discord_for_old_rows() -> None:
+    database = SimpleNamespace(
+        connection=object(),
+        ai_memory_enabled=AsyncMock(return_value=True),
+        get_ai_chat_messages=AsyncMock(
+            return_value=[
+                {
+                    "message_id": 101,
+                    "user_id": 30,
+                    "display_name": "Piss",
+                    "content": "Thats dope",
+                    "reply_to_message_id": None,
+                    "reply_to_user_id": None,
+                    "reply_to_display_name": None,
+                    "reply_to_content": None,
+                }
+            ]
+        ),
+    )
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999, display_name="K"),
+        settings=SimpleNamespace(openai_api_key="test"),
+        db=database,
+    )
+    cog = AI(bot)
+    cog.memories = SimpleNamespace(ready=False)
+    guild = SimpleNamespace(id=10, me=SimpleNamespace(id=999))
+    channel = SimpleNamespace(
+        id=40,
+        permissions_for=lambda _member: SimpleNamespace(view_channel=True),
+    )
+    target = SimpleNamespace(
+        id=100,
+        channel=channel,
+        author=SimpleNamespace(id=20, display_name="Alex"),
+        content="The original message",
+    )
+    source = SimpleNamespace(
+        id=101,
+        channel=channel,
+        reference=SimpleNamespace(
+            message_id=100,
+            resolved=None,
+            cached_message=None,
+        ),
+    )
+    channel.fetch_message = AsyncMock(side_effect=[source, target])
+    message = SimpleNamespace(
+        id=102,
+        guild=guild,
+        channel=channel,
+        author=SimpleNamespace(id=50, display_name="Learn"),
+    )
+
+    prompt = await cog._discord_prompt(message, "what did Piss reply to?", None)
+    context_json = prompt.split("<discord_context_json>\n", 1)[1].split(
+        "\n</discord_context_json>", 1
+    )[0]
+    context = json.loads(context_json)
+
+    assert context["recent_public_channel_messages"][0]["reply_to_message"] == {
+        "message_id": "100",
+        "user_id": "20",
+        "display_name": "Alex",
+        "author_type": "member",
+        "content": "The original message",
+    }
+    assert [call.args[0] for call in channel.fetch_message.await_args_list] == [101, 100]
 
 
 def test_requires_web_search_detects_explicit_and_current_requests() -> None:

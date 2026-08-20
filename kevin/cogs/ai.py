@@ -5,6 +5,7 @@ import contextlib
 import io
 import logging
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -52,6 +53,10 @@ _PRIVATE_CONTENT_RE = re.compile(
 )
 _MEMORY_CANDIDATE_RE = re.compile(
     r"\b(?:i|i'm|i’m|im|i've|i’ve|ive|my|mine|me|call me)\b", re.IGNORECASE
+)
+_REPLY_CONTEXT_RE = re.compile(
+    r"\b(?:repl(?:y|ied|ies|ying)|respond(?:ed|ing)?|what\s+message)\b",
+    re.IGNORECASE,
 )
 
 
@@ -242,6 +247,7 @@ class AI(commands.Cog):
             content,
             message.created_at.isoformat(),
             channel_limit=MAX_STORED_MESSAGES_PER_CHANNEL,
+            reply_to_message_id=self._reply_to_message_id(message),
         )
         return _MEMORY_CANDIDATE_RE.search(content) is not None
 
@@ -265,17 +271,140 @@ class AI(commands.Cog):
             content[:1_000],
             message.created_at.isoformat(),
             channel_limit=MAX_STORED_MESSAGES_PER_CHANNEL,
+            reply_to_message_id=self._reply_to_message_id(message),
         )
+
+    @staticmethod
+    def _reply_to_message_id(message: discord.Message) -> int | None:
+        reference = getattr(message, "reference", None)
+        message_id = getattr(reference, "message_id", None)
+        return int(message_id) if message_id is not None else None
 
     def _server_message(self, row: dict[str, object]) -> ServerMessage:
         bot_id = self.bot.user.id if self.bot.user is not None else 0
+        reply_to_message_id = row.get("reply_to_message_id")
+        reply_to_user_id = row.get("reply_to_user_id")
+        reply_to_display_name = row.get("reply_to_display_name")
+        reply_to_content = row.get("reply_to_content")
         return ServerMessage(
             message_id=int(row["message_id"]),
             user_id=int(row["user_id"]),
             display_name=str(row["display_name"]),
             content=str(row["content"]),
             is_bot=int(row["user_id"]) == bot_id,
+            reply_to_message_id=(
+                int(reply_to_message_id) if reply_to_message_id is not None else None
+            ),
+            reply_to_user_id=(
+                int(reply_to_user_id) if reply_to_user_id is not None else None
+            ),
+            reply_to_display_name=(
+                str(reply_to_display_name)
+                if reply_to_display_name is not None
+                else None
+            ),
+            reply_to_content=(
+                str(reply_to_content) if reply_to_content is not None else None
+            ),
+            reply_to_is_bot=(
+                int(reply_to_user_id) == bot_id
+                if reply_to_user_id is not None
+                else False
+            ),
         )
+
+    async def _channel_message(
+        self, channel: discord.abc.Messageable, message_id: int
+    ) -> object | None:
+        get_message = getattr(self.bot, "get_message", None)
+        cached = get_message(message_id) if get_message is not None else None
+        if cached is not None and getattr(getattr(cached, "channel", None), "id", None) == getattr(
+            channel, "id", None
+        ):
+            return cached
+        try:
+            return await channel.fetch_message(message_id)
+        except (discord.HTTPException, AttributeError):
+            return None
+
+    async def _enrich_reply_context(
+        self,
+        message: discord.Message,
+        question: str,
+        previous_reply: str | None,
+        recent: list[ServerMessage],
+    ) -> list[ServerMessage]:
+        """Recover one relevant Discord reply edge missing from older stored rows."""
+        if not recent or not _REPLY_CONTEXT_RE.search(question):
+            return recent
+
+        reference_text = f"{question}\n{previous_reply or ''}"
+        named = [
+            item
+            for item in recent
+            if self._name_is_referenced(reference_text, item.display_name)
+        ]
+        candidates = list(reversed(named or recent[-4:]))
+        replacement: ServerMessage | None = None
+
+        for item in candidates[:4]:
+            if item.reply_to_content is not None:
+                break
+
+            reply_to_message_id = item.reply_to_message_id
+            referenced: object | None = None
+            if reply_to_message_id is None:
+                source = await self._channel_message(message.channel, item.message_id)
+                if source is None:
+                    continue
+                reply_to_message_id = self._reply_to_message_id(source)
+                if reply_to_message_id is None:
+                    continue
+                reference = getattr(source, "reference", None)
+                referenced = getattr(reference, "resolved", None)
+                if referenced is None:
+                    referenced = getattr(reference, "cached_message", None)
+
+            if referenced is None:
+                referenced = await self._channel_message(
+                    message.channel, reply_to_message_id
+                )
+
+            reply_to_user_id: int | None = None
+            reply_to_display_name: str | None = None
+            reply_to_content: str | None = None
+            reply_to_is_bot = False
+            author = getattr(referenced, "author", None)
+            raw_user_id = getattr(author, "id", None)
+            if raw_user_id is not None:
+                reply_to_user_id = int(raw_user_id)
+                guild_id = int(getattr(message.guild, "id", 0))
+                if (guild_id, reply_to_user_id) not in self.memory_opt_outs:
+                    reply_to_display_name = self._display_name(author)
+                    raw_content = getattr(referenced, "content", None)
+                    if isinstance(raw_content, str):
+                        reply_to_content = self._observable_content(raw_content)
+                    reply_to_is_bot = bool(
+                        self.bot.user is not None
+                        and reply_to_user_id == self.bot.user.id
+                    )
+
+            replacement = replace(
+                item,
+                reply_to_message_id=reply_to_message_id,
+                reply_to_user_id=reply_to_user_id,
+                reply_to_display_name=reply_to_display_name,
+                reply_to_content=reply_to_content,
+                reply_to_is_bot=reply_to_is_bot,
+            )
+            break
+
+        if replacement is None:
+            return recent
+        return [
+            replacement if item.message_id == replacement.message_id else item
+            for item in recent
+        ]
 
     @staticmethod
     def _name_is_referenced(question: str, display_name: str) -> bool:
@@ -335,6 +464,9 @@ class AI(commands.Cog):
                 for row in rows
                 if (guild_id, int(row["user_id"])) not in self.memory_opt_outs
             ]
+            recent = await self._enrich_reply_context(
+                message, question, previous_reply, recent
+            )
             if self.memories.ready:
                 identity_rows = await self.bot.db.get_ai_memory_members(guild_id)
                 identity_names = {

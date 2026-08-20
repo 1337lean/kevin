@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from kevin.database import Database
@@ -116,6 +117,55 @@ async def test_ai_chat_memory_is_bounded_and_server_scoped(database: Database) -
     assert profile is not None
     assert profile["notes"] == ["Likes co-op games"]
     assert (await database.get_ai_member_memory(11, 30))["notes"] == ["Likes chess"]
+
+
+async def test_ai_chat_memory_resolves_discord_reply_targets(database: Database) -> None:
+    await database.record_ai_chat_message(
+        10,
+        20,
+        100,
+        30,
+        "Alex",
+        "The original message",
+        "2026-01-01T00:00:00+00:00",
+    )
+    await database.record_ai_chat_message(
+        10,
+        20,
+        101,
+        40,
+        "Piss",
+        "Thats dope",
+        "2026-01-01T00:01:00+00:00",
+        reply_to_message_id=100,
+    )
+
+    messages = await database.get_ai_chat_messages(10, 20)
+
+    assert messages[1]["reply_to_message_id"] == 100
+    assert messages[1]["reply_to_user_id"] == 30
+    assert messages[1]["reply_to_display_name"] == "Alex"
+    assert messages[1]["reply_to_content"] == "The original message"
+
+
+async def test_database_migrates_existing_ai_reply_schema(tmp_path: Path) -> None:
+    path = tmp_path / "old.sqlite3"
+    async with aiosqlite.connect(path) as connection:
+        await connection.execute(
+            "CREATE TABLE ai_chat_messages ("
+            "message_id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL, "
+            "channel_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
+            "display_name TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL)"
+        )
+        await connection.commit()
+
+    database = Database(path)
+    await database.connect()
+    try:
+        columns = await database.fetchall("PRAGMA table_info(ai_chat_messages)")
+        assert "reply_to_message_id" in {str(column["name"]) for column in columns}
+    finally:
+        await database.close()
 
 
 async def test_ai_memory_tracks_member_names_and_mem0_watermarks(database: Database) -> None:

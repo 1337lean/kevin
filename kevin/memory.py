@@ -184,7 +184,7 @@ class Mem0MemoryStore:
                 user_id=self.user_scope(guild_id, user_id),
                 agent_id=self.agent_scope(guild_id),
                 metadata={
-                    "source": "discord_public_chat",
+                    "source": "discord_server_channel",
                     "guild_id": str(guild_id),
                     "discord_user_id": str(user_id),
                     "display_name": display_name[:100],

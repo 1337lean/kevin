@@ -153,23 +153,26 @@ or Telegram, and never commit `.env`.
 
 ### Discord AI memory
 
-AI memory is enabled by default. K observes messages in channels that the server's
-`@everyone` role can view even when nobody tags it. It keeps at most 200 recent messages
-per channel in local SQLite and sends only the latest 24 from the current channel when
-someone talks to it. Every context item carries the author's immutable Discord user ID
-and current display name, so two people in the same conversation stay distinct. Messages
-that look like credentials, email addresses, or long account/card numbers are not stored;
-other bots, DMs, and private channels are excluded. K's own recent answers are retained
-with an explicit assistant label so later questions can refer back to the conversation.
+AI memory is enabled by default. K observes messages in server channels it can view even
+when nobody tags it, including channels exposed through a Member role instead of
+`@everyone`. It keeps at most 200 recent messages per channel in local SQLite and sends
+only the latest 24 from the current channel when someone talks to it. Every context item
+carries the author's immutable Discord user ID and current display name, so two people in
+the same conversation stay distinct. Messages that look like credentials, email
+addresses, or long account/card numbers are not stored; other bots and DMs are excluded.
+K's own recent answers are retained with an explicit assistant label so later questions
+can refer back to the conversation. Because this includes restricted server channels K
+can access, only grant K access where this behavior is appropriate.
 
 Durable personalization uses the self-hosted Mem0 Python library with an on-disk Qdrant
 store under `data/mem0` (change it with `MEM0_PATH`). Mem0 is scoped to one Discord user
 inside one server, so the same person has separate memory in different servers and no two
 members share a profile. It stores evolving facts rather than a fixed number of chat
-messages: relevant facts are added, merged, updated, or removed over time. For cost
-control, newly observed public-chat batches are condensed after K answers, using
-`MEM0_LLM_MODEL`; retrieval uses `MEM0_EMBEDDING_MODEL`. These are additional OpenAI API
-calls, but no hosted Mem0 account or `MEM0_API_KEY` is needed.
+messages: relevant facts are added, merged, updated, or removed over time. Server-channel
+self-disclosures that look like memory candidates are condensed shortly after they are
+observed, and `/memory show` flushes any pending observations before reading them. K uses
+`MEM0_LLM_MODEL` for condensation and `MEM0_EMBEDDING_MODEL` for retrieval. These are
+additional OpenAI API calls, but no hosted Mem0 account or `MEM0_API_KEY` is needed.
 
 K asks Mem0 to retain only explicit, non-sensitive self-disclosures such as preferences,
 hobbies, pets, or recurring projects. It does not intentionally keep health, financial,
@@ -191,8 +194,8 @@ Members control their own memory:
 Members with **Manage Server** can use `/memory server enabled:false` to disable memory
 and erase all AI notes and observations for the server. Re-enable it with
 `/memory server enabled:true`. Deleting a Discord message also removes its stored recent
-observation. As with any AI feature, tell members that public chat may be sent to OpenAI
-as context when Kevin is invoked.
+observation. As with any AI feature, tell members that recent chat from the current
+channel may be sent to OpenAI as context when Kevin is invoked.
 
 ## First server setup
 

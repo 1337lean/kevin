@@ -340,7 +340,7 @@ class Database:
         *,
         channel_limit: int = 200,
     ) -> None:
-        """Store one public chat observation and bound storage per channel."""
+        """Store one observable chat message and bound storage per channel."""
         async with self._lock:
             conn = self._conn()
             setting = await (

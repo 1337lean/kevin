@@ -195,12 +195,18 @@ class AI(commands.Cog):
         database = getattr(self.bot, "db", None)
         return database is not None and database.connection is not None
 
-    @staticmethod
-    def _is_public_channel(message: discord.Message) -> bool:
-        if message.guild is None:
+    def _can_observe_channel(self, message: discord.Message) -> bool:
+        if message.guild is None or self.bot.user is None:
+            return False
+        bot_member = getattr(message.guild, "me", None)
+        if bot_member is None:
+            get_member = getattr(message.guild, "get_member", None)
+            if get_member is not None:
+                bot_member = get_member(self.bot.user.id)
+        if bot_member is None:
             return False
         try:
-            return message.channel.permissions_for(message.guild.default_role).view_channel
+            return bool(message.channel.permissions_for(bot_member).view_channel)
         except AttributeError:
             return False
 
@@ -211,22 +217,22 @@ class AI(commands.Cog):
             self.memory_enabled_cache[guild_id] = await self.bot.db.ai_memory_enabled(guild_id)
         return self.memory_enabled_cache[guild_id]
 
-    async def _record_observation(self, message: discord.Message) -> None:
+    async def _record_observation(self, message: discord.Message) -> bool:
         if (
             not self._has_memory_database()
             or message.guild is None
-            or not self._is_public_channel(message)
+            or not self._can_observe_channel(message)
         ):
-            return
+            return False
         guild_id = message.guild.id
         user_id = message.author.id
         if not await self._memory_enabled(guild_id):
-            return
+            return False
         if (guild_id, user_id) in self.memory_opt_outs:
-            return
+            return False
         content = self._observable_content(message.content)
         if content is None:
-            return
+            return False
         await self.bot.db.record_ai_chat_message(
             guild_id,
             message.channel.id,
@@ -237,6 +243,7 @@ class AI(commands.Cog):
             message.created_at.isoformat(),
             channel_limit=MAX_STORED_MESSAGES_PER_CHANNEL,
         )
+        return _MEMORY_CANDIDATE_RE.search(content) is not None
 
     async def _record_bot_response(
         self, message: discord.Message, content: str
@@ -245,7 +252,7 @@ class AI(commands.Cog):
             not self._has_memory_database()
             or message.guild is None
             or self.bot.user is None
-            or not self._is_public_channel(message)
+            or not self._can_observe_channel(message)
             or not await self._memory_enabled(message.guild.id)
         ):
             return
@@ -316,7 +323,7 @@ class AI(commands.Cog):
         recent: list[ServerMessage] = []
         profiles: list[MemberMemory] = []
         guild_id = int(getattr(message.guild, "id", 0))
-        if guild_id and self._is_public_channel(message) and await self._memory_enabled(guild_id):
+        if guild_id and self._can_observe_channel(message) and await self._memory_enabled(guild_id):
             rows = await self.bot.db.get_ai_chat_messages(
                 guild_id,
                 message.channel.id,
@@ -488,7 +495,12 @@ class AI(commands.Cog):
         if message.author.id == self.bot.user.id or getattr(message.author, "bot", False):
             return
 
-        await self._record_observation(message)
+        memory_candidate = await self._record_observation(message)
+        if memory_candidate:
+            # Self-disclosures should become durable even when the member is merely
+            # chatting and does not ping K. The watermark and memory lock make repeated
+            # refresh tasks cheap no-ops once the observation has been processed.
+            self._schedule_memory_refresh(message.guild.id, message.channel.id)
 
         question = mentioned_question(message.content, self.bot.user.id)
         previous_reply = await self._bot_reply_context(message)
@@ -547,7 +559,7 @@ class AI(commands.Cog):
             allowed_mentions=discord.AllowedMentions.none(),
             suppress_embeds=True,
         )
-        if self._has_memory_database() and self._is_public_channel(message):
+        if self._has_memory_database() and self._can_observe_channel(message):
             if isinstance(sent_message, discord.Message):
                 await self._record_bot_response(sent_message, reply_content)
             self._schedule_memory_refresh(message.guild.id, message.channel.id)
@@ -604,6 +616,10 @@ class AI(commands.Cog):
                 private=True,
             )
             return
+        # A member can ask immediately after making a self-disclosure. Wait for any
+        # scheduled refresh (or process the pending observation ourselves) before
+        # listing Mem0 so `kmemory show` cannot race the durable write.
+        await self._run_memory_refresh(guild_id, ctx.channel.id)
         try:
             raw_notes = await self.memories.list_member(guild_id, ctx.author.id)
         except Mem0StoreError as exc:
@@ -619,7 +635,7 @@ class AI(commands.Cog):
             await self._send_memory_message(
                 ctx,
                 "I don't have any durable notes about you yet. I may still use a small amount "
-                "of recent public channel context when you talk to me.",
+                "of recent same-channel context when you talk to me.",
                 private=True,
             )
             return
@@ -701,7 +717,7 @@ class AI(commands.Cog):
         )
 
     @memory.command(name="server", description="Enable or disable AI memory for this server")
-    @app_commands.describe(enabled="Whether K may remember public chat in this server")
+    @app_commands.describe(enabled="Whether K may remember chat in channels it can view")
     @owner_or_guild_permissions(manage_guild=True)
     async def memory_server(self, ctx: commands.Context, enabled: bool) -> None:
         guild_id = ctx.guild.id

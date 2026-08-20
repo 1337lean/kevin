@@ -1,6 +1,6 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from kevin.cogs.ai import (
     AI,
@@ -85,11 +85,40 @@ def test_memory_name_matching_uses_complete_display_names() -> None:
     assert AI._name_is_referenced("what does Alexandra like?", "Alex") is False
 
 
+def test_channel_observation_uses_k_permissions_not_everyone_role() -> None:
+    everyone = object()
+    bot_member = SimpleNamespace(id=999)
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        settings=SimpleNamespace(openai_api_key="test"),
+    )
+    cog = AI(bot)
+    guild = SimpleNamespace(id=10, default_role=everyone, me=bot_member)
+    channel = SimpleNamespace(
+        permissions_for=lambda target: SimpleNamespace(
+            view_channel=target is bot_member
+        )
+    )
+    message = SimpleNamespace(guild=guild, channel=channel)
+
+    assert channel.permissions_for(everyone).view_channel is False
+    assert cog._can_observe_channel(message) is True
+
+
 async def test_discord_prompt_retrieves_separate_mem0_profiles_for_named_people() -> None:
     database = SimpleNamespace(
         connection=object(),
         ai_memory_enabled=AsyncMock(return_value=True),
-        get_ai_chat_messages=AsyncMock(return_value=[]),
+        get_ai_chat_messages=AsyncMock(
+            return_value=[
+                {
+                    "message_id": 40,
+                    "user_id": 30,
+                    "display_name": "Bea",
+                    "content": "We should play co-op",
+                }
+            ]
+        ),
         get_ai_memory_members=AsyncMock(
             return_value=[
                 {"user_id": 20, "display_name": "Alex"},
@@ -112,7 +141,12 @@ async def test_discord_prompt_retrieves_separate_mem0_profiles_for_named_people(
             }[user]
         ),
     )
-    guild = SimpleNamespace(id=10, default_role=object(), get_member=lambda _user_id: None)
+    guild = SimpleNamespace(
+        id=10,
+        default_role=object(),
+        me=SimpleNamespace(id=999),
+        get_member=lambda _user_id: None,
+    )
     channel = SimpleNamespace(
         id=40,
         permissions_for=lambda _role: SimpleNamespace(view_channel=True),
@@ -128,7 +162,8 @@ async def test_discord_prompt_retrieves_separate_mem0_profiles_for_named_people(
     context_json = prompt.split("<discord_context_json>\n", 1)[1].split(
         "\n</discord_context_json>", 1
     )[0]
-    profiles = json.loads(context_json)["server_member_notes"]
+    context = json.loads(context_json)
+    profiles = context["server_member_notes"]
 
     assert profiles == [
         {"user_id": "20", "display_name": "Alex", "notes": ["Likes chess"]},
@@ -138,6 +173,17 @@ async def test_discord_prompt_retrieves_separate_mem0_profiles_for_named_people(
             "notes": ["Likes cooperative games"],
         },
     ]
+    assert context["recent_public_channel_messages"] == [
+        {
+            "user_id": "30",
+            "display_name": "Bea",
+            "author_type": "member",
+            "content": "We should play co-op",
+        }
+    ]
+    database.get_ai_chat_messages.assert_awaited_once_with(
+        10, 40, limit=24, exclude_message_id=50
+    )
     assert [call.args[1] for call in cog.memories.search_member.await_args_list] == [20, 30]
 
 
@@ -284,6 +330,112 @@ async def test_ai_reply_suppresses_discord_link_previews() -> None:
     assert kwargs["allowed_mentions"].users is False
     assert kwargs["allowed_mentions"].roles is False
     assert kwargs["suppress_embeds"] is True
+
+
+async def test_self_disclosure_schedules_mem0_without_ping() -> None:
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        settings=SimpleNamespace(openai_api_key="test"),
+    )
+    cog = AI(bot)
+    cog._record_observation = AsyncMock(return_value=True)
+    cog._schedule_memory_refresh = Mock()
+    message = SimpleNamespace(
+        guild=SimpleNamespace(id=10),
+        author=SimpleNamespace(id=20, bot=False),
+        channel=SimpleNamespace(id=30),
+        content="I like chicken",
+        reference=None,
+    )
+
+    await cog.on_message(message)
+
+    cog._record_observation.assert_awaited_once_with(message)
+    cog._schedule_memory_refresh.assert_called_once_with(10, 30)
+
+
+async def test_mem0_refresh_ingests_i_like_chicken_for_the_correct_member() -> None:
+    added_messages: list[str] = []
+
+    async def capture_messages(_guild, _user, _name, messages) -> None:
+        added_messages.extend(messages)
+
+    database = SimpleNamespace(
+        connection=object(),
+        ai_memory_enabled=AsyncMock(return_value=True),
+        get_ai_chat_messages=AsyncMock(
+            return_value=[
+                {
+                    "message_id": 40,
+                    "user_id": 20,
+                    "display_name": "Alex",
+                    "content": "I like chicken",
+                }
+            ]
+        ),
+        get_ai_memory_watermark=AsyncMock(return_value=0),
+        set_ai_memory_watermark=AsyncMock(),
+    )
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        settings=SimpleNamespace(openai_api_key="test"),
+        db=database,
+    )
+    cog = AI(bot)
+    cog.memories = SimpleNamespace(
+        ready=True,
+        add_member_messages=AsyncMock(side_effect=capture_messages),
+    )
+
+    await cog._refresh_memories(10, 30)
+
+    assert cog.memories.add_member_messages.await_args.args[:3] == (10, 20, "Alex")
+    assert added_messages == ["I like chicken"]
+    database.set_ai_memory_watermark.assert_awaited_once_with(10, 30, 40)
+
+
+async def test_memory_show_flushes_pending_observations_before_listing() -> None:
+    events: list[str] = []
+
+    async def refresh(*_args) -> None:
+        events.append("refresh")
+
+    async def list_member(*_args) -> list[str]:
+        events.append("list")
+        return ["User likes chicken"]
+
+    database = SimpleNamespace(
+        connection=object(),
+        ai_memory_enabled=AsyncMock(return_value=True),
+    )
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        settings=SimpleNamespace(openai_api_key="test"),
+        db=database,
+    )
+    cog = AI(bot)
+    cog._run_memory_refresh = AsyncMock(side_effect=refresh)
+    cog.memories = SimpleNamespace(
+        ready=True,
+        list_member=AsyncMock(side_effect=list_member),
+    )
+    ctx = SimpleNamespace(
+        guild=SimpleNamespace(id=10),
+        channel=SimpleNamespace(id=30),
+        author=SimpleNamespace(id=20),
+        interaction=object(),
+        send=AsyncMock(),
+    )
+
+    await AI.memory.callback(cog, ctx)
+
+    cog._run_memory_refresh.assert_awaited_once_with(10, 30)
+    cog.memories.list_member.assert_awaited_once_with(10, 20)
+    assert events == ["refresh", "list"]
+    ctx.send.assert_awaited_once_with(
+        "Here’s what I remember about you in this server:\n• User likes chicken",
+        ephemeral=True,
+    )
 
 
 class _FakeOpenAIResponse:

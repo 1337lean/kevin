@@ -25,8 +25,8 @@ on OpenAI conversation and web-backed answers.
   tags, and AFK notices.
 - **Fun:** interactive trivia with stats and leaderboards, 8-ball, dice notation,
   choices, rock-paper-scissors, jokes, compatibility, ratings, mock text, and social actions.
-- **AI mentions:** ping K with a question for a short OpenAI answer with optional web
-  search and clickable sources.
+- **AI mentions and memory:** ping K for a short OpenAI answer with optional web search,
+  speaker-aware recent channel context, and small server-scoped member notes.
 
 Every command is available as a slash command. Most also support the configurable text
 prefix (default: `k`). Both `k help` and `khelp` work. Run `/help` after inviting K
@@ -143,12 +143,42 @@ OPENAI_MODEL=gpt-5.6-luna
 
 Anyone in a server can then ask a question by pinging the bot, for example
 `@K what's happening with the weather tomorrow?`. Reply directly to one of K's messages
-to ask a follow-up without pinging it again; K receives the previous reply as context.
-K uses the Responses API and can search the web when useful. Replies are intentionally
-short and include clickable source links when web search supplies citations. Each user
-can ask once every five seconds, and at most three OpenAI requests run at once to keep
+to ask a follow-up without pinging it again. K uses the Responses API and can search the
+web when useful. Replies are intentionally short and include clickable source links when
+web search supplies citations. At most three OpenAI requests run at once to keep
 shared-key usage under control. The key stays server-side; never paste it into Discord
 or Telegram, and never commit `.env`.
+
+### Discord AI memory
+
+AI memory is enabled by default. K keeps at most 200 recent messages per channel that
+the server's `@everyone` role can view in the local SQLite database, and sends only the
+latest 24 from the current channel when someone talks to it. Every context item carries
+the author's Discord user ID and display name, so two people in the same conversation
+stay distinct. Messages that look like credentials, email addresses, or long
+account/card numbers are not stored; other bots, DMs, and private channels are excluded.
+K's own recent answers are retained with an explicit assistant label so later questions
+can refer back to the conversation.
+
+After an AI reply, K may condense explicit, non-sensitive self-disclosures from that
+recent context into at most eight short notes per member. It does not intentionally keep
+health, financial, religious, political, sexual, contact, exact-location, credential, or
+alleged-wrongdoing details. Notes and observations never cross server boundaries.
+
+Members control their own memory:
+
+```text
+/memory show         Show your saved notes privately
+/memory forget       Erase current notes and observations, but keep memory on
+/memory off          Erase your data and opt out in this server
+/memory on           Opt back in, starting fresh
+```
+
+Members with **Manage Server** can use `/memory server enabled:false` to disable memory
+and erase all AI notes and observations for the server. Re-enable it with
+`/memory server enabled:true`. Deleting a Discord message also removes its stored recent
+observation. As with any AI feature, tell members that public chat may be sent to OpenAI
+as context when Kevin is invoked.
 
 ## First server setup
 

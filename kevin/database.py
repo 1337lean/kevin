@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -188,6 +189,43 @@ CREATE TABLE IF NOT EXISTS trivia_stats (
 );
 CREATE INDEX IF NOT EXISTS idx_trivia_stats_leaders
 ON trivia_stats(guild_id, correct DESC, answered ASC);
+
+CREATE TABLE IF NOT EXISTS ai_chat_messages (
+    message_id INTEGER PRIMARY KEY,
+    guild_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_channel
+ON ai_chat_messages(guild_id, channel_id, message_id DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_user
+ON ai_chat_messages(guild_id, user_id, message_id DESC);
+
+CREATE TABLE IF NOT EXISTS ai_member_memories (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL,
+    notes TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (guild_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_memories_updated
+ON ai_member_memories(guild_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_memory_opt_outs (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (guild_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS ai_memory_settings (
+    guild_id INTEGER PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1
+);
 """
 
 
@@ -272,6 +310,245 @@ class Database:
         await self.execute(
             f"UPDATE guild_settings SET {column} = ? WHERE guild_id = ?", (value, guild_id)
         )
+
+    async def record_ai_chat_message(
+        self,
+        guild_id: int,
+        channel_id: int,
+        message_id: int,
+        user_id: int,
+        display_name: str,
+        content: str,
+        created_at: str,
+        *,
+        channel_limit: int = 200,
+    ) -> None:
+        """Store one public chat observation and bound storage per channel."""
+        async with self._lock:
+            conn = self._conn()
+            setting = await (
+                await conn.execute(
+                    "SELECT enabled FROM ai_memory_settings WHERE guild_id = ?", (guild_id,)
+                )
+            ).fetchone()
+            opted_out = await (
+                await conn.execute(
+                    "SELECT 1 FROM ai_memory_opt_outs WHERE guild_id = ? AND user_id = ?",
+                    (guild_id, user_id),
+                )
+            ).fetchone()
+            if (setting is not None and not bool(setting[0])) or opted_out is not None:
+                return
+            await conn.execute(
+                "INSERT OR IGNORE INTO ai_chat_messages("
+                "message_id, guild_id, channel_id, user_id, display_name, content, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    message_id,
+                    guild_id,
+                    channel_id,
+                    user_id,
+                    display_name[:100],
+                    content[:1_000],
+                    created_at,
+                ),
+            )
+            await conn.execute(
+                "DELETE FROM ai_chat_messages WHERE guild_id = ? AND channel_id = ? "
+                "AND message_id NOT IN ("
+                "SELECT message_id FROM ai_chat_messages "
+                "WHERE guild_id = ? AND channel_id = ? "
+                "ORDER BY message_id DESC LIMIT ?)",
+                (guild_id, channel_id, guild_id, channel_id, channel_limit),
+            )
+            await conn.commit()
+
+    async def get_ai_chat_messages(
+        self,
+        guild_id: int,
+        channel_id: int,
+        *,
+        limit: int = 30,
+        exclude_message_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        parameters: list[Any] = [guild_id, channel_id]
+        exclusion = ""
+        if exclude_message_id is not None:
+            exclusion = " AND message_id != ?"
+            parameters.append(exclude_message_id)
+        parameters.append(limit)
+        rows = await self.fetchall(
+            "SELECT message_id, user_id, display_name, content, created_at "
+            "FROM ai_chat_messages WHERE guild_id = ? AND channel_id = ?"
+            f"{exclusion} ORDER BY message_id DESC LIMIT ?",
+            parameters,
+        )
+        return [dict(row) for row in reversed(rows)]
+
+    async def delete_ai_chat_message(self, message_id: int) -> None:
+        await self.execute("DELETE FROM ai_chat_messages WHERE message_id = ?", (message_id,))
+
+    async def delete_ai_chat_messages(self, message_ids: Iterable[int]) -> None:
+        ids = list(message_ids)
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        await self.execute(
+            f"DELETE FROM ai_chat_messages WHERE message_id IN ({placeholders})",
+            ids,
+        )
+
+    async def get_ai_member_memories(
+        self, guild_id: int, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        rows = await self.fetchall(
+            "SELECT user_id, display_name, notes, updated_at FROM ai_member_memories "
+            "WHERE guild_id = ? ORDER BY updated_at DESC LIMIT ?",
+            (guild_id, limit),
+        )
+        memories: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                notes = json.loads(str(row["notes"]))
+            except (TypeError, ValueError):
+                notes = []
+            memories.append(
+                {
+                    "user_id": int(row["user_id"]),
+                    "display_name": str(row["display_name"]),
+                    "notes": [str(note) for note in notes if isinstance(note, str)],
+                    "updated_at": str(row["updated_at"]),
+                }
+            )
+        return memories
+
+    async def get_ai_member_memory(self, guild_id: int, user_id: int) -> dict[str, Any] | None:
+        row = await self.fetchone(
+            "SELECT user_id, display_name, notes, updated_at FROM ai_member_memories "
+            "WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
+        if row is None:
+            return None
+        try:
+            notes = json.loads(str(row["notes"]))
+        except (TypeError, ValueError):
+            notes = []
+        return {
+            "user_id": int(row["user_id"]),
+            "display_name": str(row["display_name"]),
+            "notes": [str(note) for note in notes if isinstance(note, str)],
+            "updated_at": str(row["updated_at"]),
+        }
+
+    async def replace_ai_member_memory(
+        self,
+        guild_id: int,
+        user_id: int,
+        display_name: str,
+        notes: Iterable[str],
+    ) -> None:
+        clean_notes = [" ".join(note.split())[:160] for note in notes if note.strip()][:8]
+        async with self._lock:
+            conn = self._conn()
+            setting = await (
+                await conn.execute(
+                    "SELECT enabled FROM ai_memory_settings WHERE guild_id = ?", (guild_id,)
+                )
+            ).fetchone()
+            opted_out = await (
+                await conn.execute(
+                    "SELECT 1 FROM ai_memory_opt_outs WHERE guild_id = ? AND user_id = ?",
+                    (guild_id, user_id),
+                )
+            ).fetchone()
+            if (setting is not None and not bool(setting[0])) or opted_out is not None:
+                return
+            if not clean_notes:
+                await conn.execute(
+                    "DELETE FROM ai_member_memories WHERE guild_id = ? AND user_id = ?",
+                    (guild_id, user_id),
+                )
+            else:
+                await conn.execute(
+                    "INSERT INTO ai_member_memories(guild_id, user_id, display_name, notes) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(guild_id, user_id) DO UPDATE SET "
+                    "display_name = excluded.display_name, notes = excluded.notes, "
+                    "updated_at = CURRENT_TIMESTAMP",
+                    (guild_id, user_id, display_name[:100], json.dumps(clean_notes)),
+                )
+            await conn.commit()
+
+    async def ai_memory_enabled(self, guild_id: int) -> bool:
+        row = await self.fetchone(
+            "SELECT enabled FROM ai_memory_settings WHERE guild_id = ?", (guild_id,)
+        )
+        return row is None or bool(row["enabled"])
+
+    async def set_ai_memory_enabled(self, guild_id: int, enabled: bool) -> None:
+        async with self._lock:
+            conn = self._conn()
+            await conn.execute(
+                "INSERT INTO ai_memory_settings(guild_id, enabled) VALUES (?, ?) "
+                "ON CONFLICT(guild_id) DO UPDATE SET enabled = excluded.enabled",
+                (guild_id, int(enabled)),
+            )
+            if not enabled:
+                await conn.execute(
+                    "DELETE FROM ai_chat_messages WHERE guild_id = ?", (guild_id,)
+                )
+                await conn.execute(
+                    "DELETE FROM ai_member_memories WHERE guild_id = ?", (guild_id,)
+                )
+            await conn.commit()
+
+    async def get_ai_memory_opt_outs(self) -> set[tuple[int, int]]:
+        rows = await self.fetchall("SELECT guild_id, user_id FROM ai_memory_opt_outs")
+        return {(int(row["guild_id"]), int(row["user_id"])) for row in rows}
+
+    async def set_ai_memory_opt_out(self, guild_id: int, user_id: int, opted_out: bool) -> None:
+        async with self._lock:
+            conn = self._conn()
+            if opted_out:
+                await conn.execute(
+                    "INSERT OR IGNORE INTO ai_memory_opt_outs(guild_id, user_id) VALUES (?, ?)",
+                    (guild_id, user_id),
+                )
+                await conn.execute(
+                    "DELETE FROM ai_chat_messages WHERE guild_id = ? AND user_id = ?",
+                    (guild_id, user_id),
+                )
+                await conn.execute(
+                    "DELETE FROM ai_member_memories WHERE guild_id = ? AND user_id = ?",
+                    (guild_id, user_id),
+                )
+            else:
+                await conn.execute(
+                    "DELETE FROM ai_memory_opt_outs WHERE guild_id = ? AND user_id = ?",
+                    (guild_id, user_id),
+                )
+            await conn.commit()
+
+    async def forget_ai_user(self, guild_id: int, user_id: int) -> None:
+        async with self._lock:
+            conn = self._conn()
+            await conn.execute(
+                "DELETE FROM ai_chat_messages WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            )
+            await conn.execute(
+                "DELETE FROM ai_member_memories WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            )
+            await conn.commit()
+
+    async def clear_ai_guild_memory(self, guild_id: int) -> None:
+        async with self._lock:
+            conn = self._conn()
+            await conn.execute("DELETE FROM ai_chat_messages WHERE guild_id = ?", (guild_id,))
+            await conn.execute("DELETE FROM ai_member_memories WHERE guild_id = ?", (guild_id,))
+            await conn.commit()
 
     async def add_case(
         self, guild_id: int, action: str, target_id: int, moderator_id: int, reason: str

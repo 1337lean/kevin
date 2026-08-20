@@ -92,3 +92,72 @@ async def test_cooldown_reward_can_only_be_claimed_once(database: Database) -> N
     )
     assert first == 750
     assert second is None
+
+
+async def test_ai_chat_memory_is_bounded_and_server_scoped(database: Database) -> None:
+    for message_id in range(1, 4):
+        await database.record_ai_chat_message(
+            10,
+            20,
+            message_id,
+            30,
+            "Alex",
+            f"message {message_id}",
+            f"2026-01-0{message_id}T00:00:00+00:00",
+            channel_limit=2,
+        )
+    await database.replace_ai_member_memory(10, 30, "Alex", ["Likes co-op games"])
+    await database.replace_ai_member_memory(11, 30, "Alex", ["Likes chess"])
+
+    messages = await database.get_ai_chat_messages(10, 20)
+    profile = await database.get_ai_member_memory(10, 30)
+
+    assert [message["message_id"] for message in messages] == [2, 3]
+    assert profile is not None
+    assert profile["notes"] == ["Likes co-op games"]
+    assert (await database.get_ai_member_memory(11, 30))["notes"] == ["Likes chess"]
+
+
+async def test_ai_memory_opt_out_erases_user_data(database: Database) -> None:
+    await database.record_ai_chat_message(
+        10, 20, 1, 30, "Alex", "I like co-op games", "2026-01-01T00:00:00+00:00"
+    )
+    await database.replace_ai_member_memory(10, 30, "Alex", ["Likes co-op games"])
+
+    await database.set_ai_memory_opt_out(10, 30, opted_out=True)
+
+    assert (10, 30) in await database.get_ai_memory_opt_outs()
+    assert await database.get_ai_member_memory(10, 30) is None
+    assert await database.get_ai_chat_messages(10, 20) == []
+
+    await database.record_ai_chat_message(
+        10, 20, 2, 30, "Alex", "late message", "2026-01-02T00:00:00+00:00"
+    )
+    await database.replace_ai_member_memory(10, 30, "Alex", ["Late note"])
+    assert await database.get_ai_chat_messages(10, 20) == []
+    assert await database.get_ai_member_memory(10, 30) is None
+
+    await database.set_ai_memory_opt_out(10, 30, opted_out=False)
+    assert (10, 30) not in await database.get_ai_memory_opt_outs()
+
+
+async def test_disabling_server_ai_memory_erases_observations_and_notes(
+    database: Database,
+) -> None:
+    await database.record_ai_chat_message(
+        10, 20, 1, 30, "Alex", "I like co-op games", "2026-01-01T00:00:00+00:00"
+    )
+    await database.replace_ai_member_memory(10, 30, "Alex", ["Likes co-op games"])
+
+    await database.set_ai_memory_enabled(10, False)
+
+    assert await database.ai_memory_enabled(10) is False
+    assert await database.get_ai_chat_messages(10, 20) == []
+    assert await database.get_ai_member_memory(10, 30) is None
+
+    await database.record_ai_chat_message(
+        10, 20, 2, 30, "Alex", "late message", "2026-01-02T00:00:00+00:00"
+    )
+    await database.replace_ai_member_memory(10, 30, "Alex", ["Late note"])
+    assert await database.get_ai_chat_messages(10, 20) == []
+    assert await database.get_ai_member_memory(10, 30) is None

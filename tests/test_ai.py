@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -11,11 +12,15 @@ from kevin.cogs.ai import (
 )
 from kevin.openai_chat import (
     INSTRUCTIONS,
+    MemberMemory,
     OpenAIAPIError,
     OpenAIChatClient,
+    ServerMessage,
     completed_web_search,
     requires_web_search,
+    safe_memory_note,
     used_native_web_feed,
+    with_discord_context,
 )
 
 
@@ -34,6 +39,45 @@ def test_reply_context_includes_previous_answer_and_follow_up() -> None:
 
 def test_reply_context_is_not_added_without_a_previous_reply() -> None:
     assert with_reply_context("new question", None) == "new question"
+
+
+def test_discord_context_keeps_speakers_and_notes_separate() -> None:
+    prompt = with_discord_context(
+        "what game should we play?",
+        speaker_id=20,
+        speaker_name="Bea",
+        recent_messages=(
+            ServerMessage(1, 10, "Alex", "I like chess."),
+            ServerMessage(2, 20, "Bea", "I like co-op games."),
+        ),
+        member_memories=(MemberMemory(10, "Alex", ("Likes chess",)),),
+    )
+
+    context_json = prompt.split("<discord_context_json>\n", 1)[1].split(
+        "\n</discord_context_json>", 1
+    )[0]
+    context = json.loads(context_json)
+
+    assert context["latest_speaker"] == {"user_id": "20", "display_name": "Bea"}
+    assert context["recent_public_channel_messages"][0]["user_id"] == "10"
+    assert context["recent_public_channel_messages"][0]["author_type"] == "member"
+    assert context["recent_public_channel_messages"][1]["user_id"] == "20"
+    assert context["server_member_notes"][0]["notes"] == ["Likes chess"]
+    assert context["latest_message"] == "what game should we play?"
+
+
+def test_memory_note_filter_rejects_sensitive_details() -> None:
+    assert safe_memory_note("Likes cooperative games") == "Likes cooperative games"
+    assert safe_memory_note("Email is person@example.com") is None
+    assert safe_memory_note("Has a medical diagnosis") is None
+    assert safe_memory_note("API key: abc123") is None
+
+
+def test_observation_filter_skips_likely_private_content() -> None:
+    assert AI._observable_content("ordinary server chat") == "ordinary server chat"
+    assert AI._observable_content("email me at person@example.com") is None
+    assert AI._observable_content("token: super-secret") is None
+    assert AI._observable_content("mfa.abcdefghijklmnopqrstuvwxyz") is None
 
 
 def test_requires_web_search_detects_explicit_and_current_requests() -> None:
@@ -290,6 +334,48 @@ async def test_openai_client_defaults_to_discord_style_automatic_web_search() ->
     assert "Do not claim that you searched" in INSTRUCTIONS
 
 
+async def test_openai_client_extracts_structured_member_memories_safely() -> None:
+    client = OpenAIChatClient("test-key", "test-model")
+    response = {
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": json.dumps(
+                            {
+                                "members": [
+                                    {
+                                        "user_id": "10",
+                                        "notes": [
+                                            "Likes cooperative games",
+                                            "Email is person@example.com",
+                                        ],
+                                    },
+                                    {"user_id": "999", "notes": ["Unknown person"]},
+                                ]
+                            }
+                        ),
+                    }
+                ],
+            }
+        ]
+    }
+    session = _FakeOpenAISession([response])
+    client.session = session
+
+    memories = await client.extract_member_memories(
+        [MemberMemory(10, "Alex", ())],
+        [ServerMessage(1, 10, "Alex", "I like cooperative games")],
+    )
+
+    assert memories == {10: ["Likes cooperative games"]}
+    assert session.payload["text"]["format"]["type"] == "json_schema"
+    assert session.payload["store"] is False
+    assert "public_chat_messages" in session.payload["input"]
+
+
 async def test_openai_client_source_link_mode_uses_url_backed_search() -> None:
     client = OpenAIChatClient("test-key", "test-model")
     session = _FakeOpenAISession([_sourced_response()])
@@ -329,6 +415,20 @@ async def test_openai_client_retries_a_search_that_has_no_public_url() -> None:
     assert len(session.payloads) == 2
     assert "User request:\nwhat is the current price?" in session.payloads[1]["input"]
     assert "searched" not in session.payloads[1]["input"]
+
+
+def test_source_retry_extracts_latest_message_from_discord_context() -> None:
+    prompt = with_discord_context(
+        "what is the latest release?",
+        speaker_id=20,
+        speaker_name="Bea",
+        recent_messages=(ServerMessage(1, 10, "Alex", "x" * 3_000),),
+    )
+
+    retry = OpenAIChatClient._source_retry_input(prompt)
+
+    assert "User request:\nwhat is the latest release?" in retry
+    assert "x" * 100 not in retry
 
 
 async def test_openai_client_rejects_native_feeds_and_retries_independently() -> None:

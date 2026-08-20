@@ -93,8 +93,11 @@ class KevinBot(commands.Bot):
         )
 
     async def close(self) -> None:
-        await self.db.close()
-        await super().close()
+        # Cog unload hooks stop background work before its shared database disappears.
+        try:
+            await super().close()
+        finally:
+            await self.db.close()
 
     async def send_log(self, guild: discord.Guild, event: discord.Embed) -> None:
         row = await self.db.fetchone(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import random
 
@@ -11,6 +12,235 @@ from kevin.bot import KevinBot
 from kevin.utils.formatting import embed
 
 RNG = random.SystemRandom()
+
+C4_ROWS = 6
+C4_COLUMNS = 7
+C4_EMPTY = 0
+C4_RED = 1
+C4_YELLOW = 2
+C4_DISCS = {C4_EMPTY: "⚪", C4_RED: "🔴", C4_YELLOW: "🟡"}
+C4_NUMBERS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣")
+
+
+def new_c4_board() -> list[list[int]]:
+    return [[C4_EMPTY] * C4_COLUMNS for _ in range(C4_ROWS)]
+
+
+def c4_drop(board: list[list[int]], column: int, player: int) -> int | None:
+    """Drop a disc into a column, returning the row it landed in or None if full."""
+    for row in range(C4_ROWS - 1, -1, -1):
+        if board[row][column] == C4_EMPTY:
+            board[row][column] = player
+            return row
+    return None
+
+
+def c4_winning_cells(
+    board: list[list[int]], player: int
+) -> tuple[tuple[int, int], ...] | None:
+    """Return the cells of a four-in-a-row line for player, or None."""
+    directions = ((0, 1), (1, 0), (1, 1), (1, -1))
+    for row in range(C4_ROWS):
+        for column in range(C4_COLUMNS):
+            if board[row][column] != player:
+                continue
+            for step_row, step_column in directions:
+                cells = tuple(
+                    (row + index * step_row, column + index * step_column) for index in range(4)
+                )
+                if all(
+                    0 <= cell_row < C4_ROWS
+                    and 0 <= cell_column < C4_COLUMNS
+                    and board[cell_row][cell_column] == player
+                    for cell_row, cell_column in cells
+                ):
+                    return cells
+    return None
+
+
+def c4_is_full(board: list[list[int]]) -> bool:
+    return all(cell != C4_EMPTY for row in board for cell in row)
+
+
+def render_c4_board(board: list[list[int]]) -> str:
+    rows = [" ".join(C4_DISCS[cell] for cell in row) for row in board]
+    return "\n".join(rows) + "\n" + " ".join(C4_NUMBERS)
+
+
+class ConnectFourChallenge(discord.ui.View):
+    """Accept or decline a Connect 4 challenge."""
+
+    def __init__(self, challenger: discord.Member, opponent: discord.Member) -> None:
+        super().__init__(timeout=120)
+        self.challenger = challenger
+        self.opponent = opponent
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.opponent.id:
+            return True
+        if interaction.user.id == self.challenger.id:
+            await interaction.response.send_message(
+                "Wait for your opponent to accept!", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                "This challenge belongs to someone else—start your own with `/connect4`!",
+                ephemeral=True,
+            )
+        return False
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True  # type: ignore[attr-defined]
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=embed(
+                        "Connect 4",
+                        f"{self.opponent.mention} did not respond to "
+                        f"{self.challenger.mention}'s challenge.",
+                    ),
+                    view=self,
+                )
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="🎮")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        game = ConnectFourGame(self.challenger, self.opponent)
+        await interaction.response.edit_message(embed=game.game_embed(), view=game)
+        game.message = self.message
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            embed=embed(
+                "Connect 4",
+                f"{self.opponent.mention} declined {self.challenger.mention}'s challenge.",
+            ),
+            view=self,
+        )
+        self.stop()
+
+
+class ConnectFourGame(discord.ui.View):
+    """Column buttons and state for one Connect 4 match."""
+
+    def __init__(self, red_player: discord.Member, yellow_player: discord.Member) -> None:
+        super().__init__(timeout=300)
+        self.players = {C4_RED: red_player, C4_YELLOW: yellow_player}
+        self.board = new_c4_board()
+        self.turn = C4_RED
+        self.finished = False
+        self.message: discord.Message | None = None
+        self.move_lock = asyncio.Lock()
+        self.update_controls()
+
+    def current_player(self) -> discord.Member:
+        return self.players[self.turn]
+
+    def update_controls(self) -> None:
+        for child in self.children:
+            if isinstance(child, discord.ui.Button) and child.label and child.label.isdigit():
+                column = int(child.label) - 1
+                full = all(row[column] != C4_EMPTY for row in self.board)
+                child.disabled = self.finished or full
+
+    def game_embed(self, result: str | None = None) -> discord.Embed:
+        title = (
+            f"🔴 {self.players[C4_RED].display_name} vs "
+            f"🟡 {self.players[C4_YELLOW].display_name}"
+        )
+        description = render_c4_board(self.board)
+        if not self.finished:
+            description += f"\n\n{self.current_player().mention}, pick a column!"
+        if result:
+            description += f"\n\n{result}"
+        return embed(title, description)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id in (player.id for player in self.players.values()):
+            return True
+        await interaction.response.send_message(
+            "This match belongs to someone else—start your own with `/connect4`!",
+            ephemeral=True,
+        )
+        return False
+
+    async def on_timeout(self) -> None:
+        self.finished = True
+        self.update_controls()
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=self.game_embed("The match expired from inactivity."), view=self
+                )
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="1", style=discord.ButtonStyle.primary)
+    async def column_one(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.play(interaction, 0)
+
+    @discord.ui.button(label="2", style=discord.ButtonStyle.primary)
+    async def column_two(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.play(interaction, 1)
+
+    @discord.ui.button(label="3", style=discord.ButtonStyle.primary)
+    async def column_three(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self.play(interaction, 2)
+
+    @discord.ui.button(label="4", style=discord.ButtonStyle.primary)
+    async def column_four(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self.play(interaction, 3)
+
+    @discord.ui.button(label="5", style=discord.ButtonStyle.primary)
+    async def column_five(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self.play(interaction, 4)
+
+    @discord.ui.button(label="6", style=discord.ButtonStyle.primary, row=1)
+    async def column_six(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self.play(interaction, 5)
+
+    @discord.ui.button(label="7", style=discord.ButtonStyle.primary, row=1)
+    async def column_seven(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self.play(interaction, 6)
+
+    async def play(self, interaction: discord.Interaction, column: int) -> None:
+        if interaction.user.id != self.current_player().id:
+            await interaction.response.send_message("It's not your turn yet!", ephemeral=True)
+            return
+        async with self.move_lock:
+            if self.finished or c4_drop(self.board, column, self.turn) is None:
+                await interaction.response.send_message("That column is full!", ephemeral=True)
+                return
+            winner_cells = c4_winning_cells(self.board, self.turn)
+            if winner_cells is not None:
+                self.finished = True
+                result = f"{self.current_player().mention} wins! 🎉"
+            elif c4_is_full(self.board):
+                self.finished = True
+                result = "It's a draw—board is full!"
+            else:
+                self.turn = C4_YELLOW if self.turn == C4_RED else C4_RED
+                result = None
+            self.update_controls()
+            await interaction.response.edit_message(embed=self.game_embed(result), view=self)
+        if self.finished:
+            self.stop()
 
 
 class Fun(commands.Cog):
@@ -120,6 +350,24 @@ class Fun(commands.Cog):
             c.upper() if index % 2 else c.lower() for index, c in enumerate(text[:1500])
         )
         await ctx.send(result, allowed_mentions=discord.AllowedMentions.none())
+
+    @commands.hybrid_command(aliases=["c4"], description="Challenge someone to Connect 4")
+    @app_commands.describe(opponent="The member you want to play against")
+    async def connect4(self, ctx: commands.Context, opponent: discord.Member) -> None:
+        if opponent.id == ctx.author.id:
+            raise commands.BadArgument("You cannot challenge yourself.")
+        if opponent.bot:
+            raise commands.BadArgument("K's circuits are no match for a bot opponent.")
+        view = ConnectFourChallenge(ctx.author, opponent)
+        message = await ctx.send(
+            embed=embed(
+                "Connect 4",
+                f"{opponent.mention}, {ctx.author.mention} challenges you to Connect 4! "
+                "🔴 goes first.",
+            ),
+            view=view,
+        )
+        view.message = message
 
     @commands.hybrid_command(description="Send an action to another member")
     @app_commands.choices(

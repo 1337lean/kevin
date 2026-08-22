@@ -19,6 +19,7 @@ EXTENSIONS = (
     "kevin.cogs.logging",
     "kevin.cogs.economy",
     "kevin.cogs.fun",
+    "kevin.cogs.birthdays",
     "kevin.cogs.utility",
     "kevin.cogs.community",
     "kevin.cogs.tickets",

@@ -35,6 +35,7 @@ class Configuration(commands.Cog):
         card.add_field(name="Autorole", value=role)
         card.add_field(name="Welcome channel", value=channel("welcome_channel_id"))
         card.add_field(name="Goodbye channel", value=channel("goodbye_channel_id"))
+        card.add_field(name="Birthday channel", value=channel("birthday_channel_id"))
         card.add_field(name="Economy", value="On" if settings.get("economy_enabled") else "Off")
         card.add_field(name="Automod", value="On" if settings.get("automod_enabled") else "Off")
         await ctx.send(embed=card)
@@ -97,6 +98,21 @@ class Configuration(commands.Cog):
         await ctx.send(
             embed=success(
                 f"Goodbye messages {'will go to ' + channel.mention if channel else 'are disabled'}."
+            )
+        )
+
+    @config.command(name="birthdays", description="Set or disable birthday announcements")
+    @owner_or_guild_permissions(manage_guild=True)
+    async def birthdays(
+        self, ctx: commands.Context, channel: discord.TextChannel | None = None
+    ) -> None:
+        await self.bot.db.set_setting(
+            ctx.guild.id, "birthday_channel_id", channel.id if channel else None
+        )
+        await ctx.send(
+            embed=success(
+                f"Birthday announcements "
+                f"{'will go to ' + channel.mention if channel else 'are disabled'}."
             )
         )
 

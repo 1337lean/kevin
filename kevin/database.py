@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     starboard_channel_id INTEGER,
     starboard_threshold INTEGER NOT NULL DEFAULT 3,
     suggestion_channel_id INTEGER,
+    birthday_channel_id INTEGER,
     economy_enabled INTEGER NOT NULL DEFAULT 1,
     automod_enabled INTEGER NOT NULL DEFAULT 0,
     automod_invites INTEGER NOT NULL DEFAULT 0,
@@ -190,6 +191,17 @@ CREATE TABLE IF NOT EXISTS trivia_stats (
 CREATE INDEX IF NOT EXISTS idx_trivia_stats_leaders
 ON trivia_stats(guild_id, correct DESC, answered ASC);
 
+CREATE TABLE IF NOT EXISTS birthdays (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    month INTEGER NOT NULL,
+    day INTEGER NOT NULL,
+    year INTEGER,
+    announced_year INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_birthdays_date ON birthdays(month, day);
+
 CREATE TABLE IF NOT EXISTS ai_chat_messages (
     message_id INTEGER PRIMARY KEY,
     guild_id INTEGER NOT NULL,
@@ -319,6 +331,7 @@ class Database:
             "starboard_channel_id",
             "starboard_threshold",
             "suggestion_channel_id",
+            "birthday_channel_id",
             "economy_enabled",
             "automod_enabled",
             "automod_invites",
@@ -681,6 +694,44 @@ class Database:
                 "streak": streak,
                 "best_streak": best_streak,
             }
+
+    async def set_birthday(
+        self, guild_id: int, user_id: int, month: int, day: int, year: int | None
+    ) -> None:
+        await self.execute(
+            """INSERT INTO birthdays(guild_id, user_id, month, day, year, announced_year)
+               VALUES (?, ?, ?, ?, ?, 0)
+               ON CONFLICT(guild_id, user_id)
+               DO UPDATE SET month = excluded.month,
+                             day = excluded.day,
+                             year = excluded.year,
+                             announced_year = 0""",
+            (guild_id, user_id, month, day, year),
+        )
+
+    async def remove_birthday(self, guild_id: int, user_id: int) -> bool:
+        if await self.get_birthday(guild_id, user_id) is None:
+            return False
+        await self.execute(
+            "DELETE FROM birthdays WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+        )
+        return True
+
+    async def get_birthday(self, guild_id: int, user_id: int) -> aiosqlite.Row | None:
+        return await self.fetchone(
+            "SELECT * FROM birthdays WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+        )
+
+    async def list_birthdays(self, guild_id: int) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT * FROM birthdays WHERE guild_id = ? ORDER BY month, day", (guild_id,)
+        )
+
+    async def mark_birthday_announced(self, guild_id: int, user_id: int, year: int) -> None:
+        await self.execute(
+            "UPDATE birthdays SET announced_year = ? WHERE guild_id = ? AND user_id = ?",
+            (year, guild_id, user_id),
+        )
 
     async def seize_balance(
         self,

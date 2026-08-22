@@ -12,6 +12,7 @@ on OpenAI conversation and web-backed answers.
   filters, with moderator exemptions and action logging.
 - **Community:** welcomes, goodbyes, autoroles, polls, reminders,
   member/server info, timestamps, image-to-GIF conversion, and a safe calculator.
+  Birthday tracking with daily announcements (`/birthday set`, `/config birthdays`).
 - **Economy:** Kash wallet and bank balances, daily rewards, jobs, payments, admin
   grants, robbery, a collectible shop, inventory, coin flips, dice, interactive blackjack
   (`/blackjack` or `/bj`), interactive craps (`/craps`) with pass/don't pass lines and true
@@ -23,7 +24,8 @@ on OpenAI conversation and web-backed answers.
 - **Engagement:** Twitch, YouTube, and TikTok live alerts, TikTok post alerts,
   button-entry giveaways, reaction roles, starboard highlights, suggestions, reusable
   tags, and AFK notices.
-- **Fun:** interactive trivia with stats and leaderboards, 8-ball, dice notation,
+- **Fun:** interactive trivia with stats and leaderboards, head-to-head Connect 4
+  (`/connect4`), 8-ball, dice notation,
   choices, rock-paper-scissors, jokes, compatibility, ratings, mock text, and social actions.
 - **AI mentions and memory:** ping K for a short OpenAI answer with optional web search,
   speaker-aware recent channel context, and durable per-member Mem0 memory.

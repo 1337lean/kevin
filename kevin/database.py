@@ -270,6 +270,13 @@ class Database:
         self.connection = await aiosqlite.connect(self.path)
         self.connection.row_factory = aiosqlite.Row
         await self.connection.executescript(SCHEMA)
+        guild_setting_columns = await (
+            await self.connection.execute("PRAGMA table_info(guild_settings)")
+        ).fetchall()
+        if "birthday_channel_id" not in {str(column[1]) for column in guild_setting_columns}:
+            await self.connection.execute(
+                "ALTER TABLE guild_settings ADD COLUMN birthday_channel_id INTEGER"
+            )
         columns = await (
             await self.connection.execute("PRAGMA table_info(ai_chat_messages)")
         ).fetchall()

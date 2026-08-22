@@ -168,6 +168,26 @@ async def test_database_migrates_existing_ai_reply_schema(tmp_path: Path) -> Non
         await database.close()
 
 
+async def test_database_migrates_existing_birthday_channel_schema(tmp_path: Path) -> None:
+    path = tmp_path / "old.sqlite3"
+    async with aiosqlite.connect(path) as connection:
+        await connection.execute("CREATE TABLE guild_settings (guild_id INTEGER PRIMARY KEY)")
+        await connection.execute("INSERT INTO guild_settings(guild_id) VALUES (10)")
+        await connection.commit()
+
+    database = Database(path)
+    await database.connect()
+    try:
+        columns = await database.fetchall("PRAGMA table_info(guild_settings)")
+        assert "birthday_channel_id" in {str(column["name"]) for column in columns}
+
+        await database.set_setting(10, "birthday_channel_id", 20)
+        settings = await database.get_settings(10)
+        assert settings["birthday_channel_id"] == 20
+    finally:
+        await database.close()
+
+
 async def test_ai_memory_tracks_member_names_and_mem0_watermarks(database: Database) -> None:
     await database.record_ai_chat_message(
         10, 20, 1, 30, "Alex", "I like co-op games", "2026-01-01T00:00:00+00:00"

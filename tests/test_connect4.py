@@ -1,8 +1,14 @@
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 from kevin.cogs.fun import (
     C4_COLUMNS,
     C4_RED,
     C4_ROWS,
     C4_YELLOW,
+    ConnectFourChallenge,
+    ConnectFourGame,
     c4_drop,
     c4_is_full,
     c4_winning_cells,
@@ -93,3 +99,81 @@ def test_rendered_board_has_header_and_discs() -> None:
     assert "7️⃣" in rendered
     assert rendered.count("🔴") == 1
     assert rendered.count("⚪") == C4_ROWS * C4_COLUMNS - 1
+
+
+def player(player_id: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=player_id,
+        bot=False,
+        mention=f"<@{player_id}>",
+        display_name=f"Player {player_id}",
+    )
+
+
+def interaction(player_id: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        user=player(player_id),
+        response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock()),
+    )
+
+
+async def test_accepting_challenge_stops_challenge_timeout() -> None:
+    challenge = ConnectFourChallenge(player(1), player(2))
+    challenge.message = SimpleNamespace()
+    response = interaction(2)
+
+    await challenge.accept.callback(response)
+
+    assert challenge.is_finished()
+    response.response.edit_message.assert_awaited_once()
+    game = response.response.edit_message.await_args.kwargs["view"]
+    assert isinstance(game, ConnectFourGame)
+    assert game.message is challenge.message
+
+
+async def test_simultaneous_clicks_cannot_play_both_turns() -> None:
+    game = ConnectFourGame(player(1), player(2))
+    first_click = interaction(1)
+    second_click = interaction(1)
+
+    await game.move_lock.acquire()
+    first_move = asyncio.create_task(game.play(first_click, 0))
+    second_move = asyncio.create_task(game.play(second_click, 1))
+    await asyncio.sleep(0)
+    game.move_lock.release()
+    await asyncio.gather(first_move, second_move)
+
+    assert sum(cell != 0 for row in game.board for cell in row) == 1
+    assert (
+        first_click.response.edit_message.await_count
+        + second_click.response.edit_message.await_count
+        == 1
+    )
+    assert (
+        first_click.response.send_message.await_count
+        + second_click.response.send_message.await_count
+        == 1
+    )
+
+
+async def test_gameplay_alternates_turns_and_stops_on_a_win() -> None:
+    game = ConnectFourGame(player(1), player(2))
+    last_click = None
+
+    for player_id, column in (
+        (1, 0),
+        (2, 4),
+        (1, 1),
+        (2, 4),
+        (1, 2),
+        (2, 5),
+        (1, 3),
+    ):
+        last_click = interaction(player_id)
+        await game.play(last_click, column)
+
+    assert game.finished
+    assert game.is_finished()
+    assert all(child.disabled for child in game.children)
+    result = last_click.response.edit_message.await_args.kwargs["embed"].description
+    assert "<@1> wins" in result

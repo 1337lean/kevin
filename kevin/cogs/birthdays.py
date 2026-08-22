@@ -13,13 +13,21 @@ from kevin.utils.formatting import embed, success
 
 def validate_birthday(month: int, day: int, year: int | None) -> None:
     """Raise ValueError unless the date is a real calendar date."""
+    today = date.today()
     if not 1 <= month <= 12:
         raise ValueError("Month must be between 1 and 12.")
     longest = 29 if month == 2 else calendar.monthrange(2001, month)[1]
     if not 1 <= day <= longest:
         raise ValueError(f"Day must be between 1 and {longest} for that month.")
-    if year is not None and not 1900 <= year <= date.today().year:
-        raise ValueError(f"Year must be between 1900 and {date.today().year}.")
+    if year is not None and not 1900 <= year <= today.year:
+        raise ValueError(f"Year must be between 1900 and {today.year}.")
+    if year is not None:
+        try:
+            birth_date = date(year, month, day)
+        except ValueError as exc:
+            raise ValueError("That birth date is not a real calendar date.") from exc
+        if birth_date > today:
+            raise ValueError("Birth date cannot be in the future.")
 
 
 def is_birthday_today(month: int, day: int, today: date) -> bool:

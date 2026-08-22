@@ -111,6 +111,7 @@ class ConnectFourChallenge(discord.ui.View):
         game = ConnectFourGame(self.challenger, self.opponent)
         await interaction.response.edit_message(embed=game.game_embed(), view=game)
         game.message = self.message
+        self.stop()
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -220,11 +221,16 @@ class ConnectFourGame(discord.ui.View):
         await self.play(interaction, 6)
 
     async def play(self, interaction: discord.Interaction, column: int) -> None:
-        if interaction.user.id != self.current_player().id:
-            await interaction.response.send_message("It's not your turn yet!", ephemeral=True)
-            return
         async with self.move_lock:
-            if self.finished or c4_drop(self.board, column, self.turn) is None:
+            if self.finished:
+                await interaction.response.send_message(
+                    "This match is already over!", ephemeral=True
+                )
+                return
+            if interaction.user.id != self.current_player().id:
+                await interaction.response.send_message("It's not your turn yet!", ephemeral=True)
+                return
+            if c4_drop(self.board, column, self.turn) is None:
                 await interaction.response.send_message("That column is full!", ephemeral=True)
                 return
             winner_cells = c4_winning_cells(self.board, self.turn)

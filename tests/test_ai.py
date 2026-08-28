@@ -24,10 +24,13 @@ from kevin.openai_chat import (
 )
 
 
-def test_mentioned_question_strips_direct_bot_mentions() -> None:
+def test_mentioned_question_activates_for_ping_or_kevin_name() -> None:
     assert mentioned_question("hey <@123> look this up", 123) == "hey look this up"
     assert mentioned_question("<@!123> what's new?", 123) == "what's new?"
+    assert mentioned_question("Kevin, what's new?", 123) == "what's new?"
+    assert mentioned_question(".kEvIn tell me a joke", 123) == "tell me a joke"
     assert mentioned_question("hello there", 123) is None
+    assert mentioned_question("that belongs to kevinsmith", 123) is None
 
 
 def test_reply_context_includes_previous_answer_and_follow_up() -> None:

@@ -145,13 +145,13 @@ MEM0_LLM_MODEL=gpt-4.1-mini
 MEM0_EMBEDDING_MODEL=text-embedding-3-small
 ```
 
-Anyone in a server can then ask a question by pinging the bot, for example
-`@K what's happening with the weather tomorrow?`. Reply directly to one of K's messages
-to ask a follow-up without pinging it again. K uses the Responses API and can search the
-web when useful. Replies are intentionally short and include clickable source links when
-web search supplies citations. At most three OpenAI requests run at once to keep
-shared-key usage under control. The key stays server-side; never paste it into Discord
-or Telegram, and never commit `.env`.
+Anyone in a server can then ask a question by pinging the bot or saying `Kevin`, for example
+`@K what's happening with the weather tomorrow?` or `Kevin, tell me a joke`. Reply directly
+to one of K's messages to ask a follow-up without invoking it by name. K uses the Responses
+API and can search the web when useful. Replies are intentionally short and include
+clickable source links when web search supplies citations. At most three OpenAI requests
+run at once to keep shared-key usage under control. The key stays server-side; never paste
+it into Discord or Telegram, and never commit `.env`.
 
 ### Discord AI memory
 

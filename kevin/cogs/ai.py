@@ -58,16 +58,20 @@ _REPLY_CONTEXT_RE = re.compile(
     r"\b(?:repl(?:y|ied|ies|ying)|respond(?:ed|ing)?|what\s+message)\b",
     re.IGNORECASE,
 )
+_KEVIN_NAME_RE = re.compile(r"(?<!\w)\.?kevin\b(?:[,:]\s*)?", re.IGNORECASE)
 
 
 def mentioned_question(content: str, bot_user_id: int) -> str | None:
-    """Return the text from a direct bot mention, or None when K was not pinged."""
+    """Return text addressed to Kevin by ping or name, or None when not invoked."""
     mentions = (f"<@{bot_user_id}>", f"<@!{bot_user_id}>")
-    if not any(mention in content for mention in mentions):
+    directly_mentioned = any(mention in content for mention in mentions)
+    named = _KEVIN_NAME_RE.search(content) is not None
+    if not directly_mentioned and not named:
         return None
     question = content
     for mention in mentions:
         question = question.replace(mention, " ")
+    question = _KEVIN_NAME_RE.sub(" ", question)
     return " ".join(question.split())
 
 

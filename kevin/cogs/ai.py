@@ -628,6 +628,9 @@ class AI(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         if message.guild is None or self.bot.user is None:
             return
+        blocked_user_ids = getattr(self.bot.settings, "blocked_user_ids", ())
+        if message.author.id in blocked_user_ids:
+            return
         if message.author.id == self.bot.user.id or getattr(message.author, "bot", False):
             return
 

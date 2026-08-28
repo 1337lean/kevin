@@ -499,6 +499,31 @@ async def test_self_disclosure_schedules_mem0_without_ping() -> None:
     cog._schedule_memory_refresh.assert_called_once_with(10, 30)
 
 
+async def test_blocked_user_is_ignored_before_ai_observation() -> None:
+    blocked_user_id = 1189439193861083149
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        settings=SimpleNamespace(
+            openai_api_key="test", blocked_user_ids={blocked_user_id}
+        ),
+    )
+    cog = AI(bot)
+    cog._record_observation = AsyncMock()
+    message = SimpleNamespace(
+        guild=SimpleNamespace(id=10),
+        author=SimpleNamespace(id=blocked_user_id, bot=False),
+        channel=SimpleNamespace(id=30),
+        content="kevin answer me",
+        reference=None,
+        reply=AsyncMock(),
+    )
+
+    await cog.on_message(message)
+
+    cog._record_observation.assert_not_awaited()
+    message.reply.assert_not_awaited()
+
+
 async def test_mem0_refresh_ingests_i_like_chicken_for_the_correct_member() -> None:
     added_messages: list[str] = []
 

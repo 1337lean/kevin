@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+DEFAULT_DISCORD_BLOCKED_USER_IDS = frozenset({1189439193861083149})
+
 
 def _optional_int(value: str | None) -> int | None:
     if not value or not value.strip():
@@ -27,6 +29,7 @@ class Settings:
     status: str = "keeping the server tidy"
     stream_url: str | None = None
     owner_ids: set[int] | None = None
+    blocked_user_ids: frozenset[int] = DEFAULT_DISCORD_BLOCKED_USER_IDS
     test_guild_id: int | None = None
     ytdlp_cookie_file: Path | None = None
     twitch_client_id: str | None = None
@@ -56,6 +59,14 @@ class Settings:
             status=os.getenv("KEVIN_STATUS", "keeping the server tidy"),
             stream_url=os.getenv("KEVIN_STREAM_URL", "").strip() or None,
             owner_ids=_id_set(os.getenv("KEVIN_OWNER_IDS")),
+            blocked_user_ids=frozenset(
+                _id_set(
+                    os.getenv(
+                        "KEVIN_BLOCKED_USER_IDS",
+                        ",".join(map(str, DEFAULT_DISCORD_BLOCKED_USER_IDS)),
+                    )
+                )
+            ),
             test_guild_id=_optional_int(os.getenv("KEVIN_TEST_GUILD_ID")),
             ytdlp_cookie_file=Path(cookie) if cookie else None,
             twitch_client_id=os.getenv("TWITCH_CLIENT_ID", "").strip() or None,

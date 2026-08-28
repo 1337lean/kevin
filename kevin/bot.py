@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 from kevin.config import Settings
@@ -49,13 +48,6 @@ async def prefix_resolver(bot: KevinBot, message: discord.Message):
     return prefix
 
 
-class KevinCommandTree(app_commands.CommandTree):
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        settings = getattr(self.client, "settings", None)
-        blocked_user_ids = getattr(settings, "blocked_user_ids", ())
-        return interaction.user.id not in blocked_user_ids
-
-
 class KevinBot(commands.Bot):
     def __init__(self, settings: Settings) -> None:
         intents = discord.Intents.default()
@@ -69,7 +61,6 @@ class KevinBot(commands.Bot):
             intents=intents,
             help_command=None,
             case_insensitive=True,
-            tree_cls=KevinCommandTree,
             owner_ids=settings.owner_ids or set(),
             allowed_mentions=discord.AllowedMentions(
                 everyone=False, roles=False, users=True, replied_user=False
@@ -78,11 +69,6 @@ class KevinBot(commands.Bot):
         self.settings = settings
         self.db = Database(settings.database_path)
         self.started_at = discord.utils.utcnow()
-
-    async def process_commands(self, message: discord.Message, /) -> None:
-        if message.author.id in self.settings.blocked_user_ids:
-            return
-        await super().process_commands(message)
 
     async def setup_hook(self) -> None:
         await self.db.connect()

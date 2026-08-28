@@ -1,5 +1,4 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import discord
 import pytest
@@ -27,25 +26,6 @@ async def test_text_prefix_accepts_optional_whitespace(content: str) -> None:
     context = await bot.get_context(message)
 
     assert context.command is ping
-
-
-async def test_blocked_user_cannot_use_text_or_slash_commands() -> None:
-    blocked_user_id = 1189439193861083149
-    bot = KevinBot(Settings(token="test"))
-    bot.get_context = AsyncMock()
-
-    await bot.process_commands(SimpleNamespace(author=SimpleNamespace(id=blocked_user_id)))
-
-    bot.get_context.assert_not_awaited()
-    interaction = SimpleNamespace(user=SimpleNamespace(id=blocked_user_id))
-    assert await bot.tree.interaction_check(interaction) is False
-
-
-async def test_unblocked_user_can_use_slash_commands() -> None:
-    bot = KevinBot(Settings(token="test"))
-    interaction = SimpleNamespace(user=SimpleNamespace(id=1))
-
-    assert await bot.tree.interaction_check(interaction) is True
 
 
 def test_presence_is_streaming_when_url_is_configured() -> None:

@@ -49,6 +49,7 @@ def test_discord_context_keeps_speakers_and_notes_separate() -> None:
         "what game should we play?",
         speaker_id=20,
         speaker_name="Bea",
+        speaker_username="bea.account",
         recent_messages=(
             ServerMessage(1, 10, "Alex", "I like chess."),
             ServerMessage(2, 20, "Bea", "I like co-op games."),
@@ -61,7 +62,11 @@ def test_discord_context_keeps_speakers_and_notes_separate() -> None:
     )[0]
     context = json.loads(context_json)
 
-    assert context["latest_speaker"] == {"user_id": "20", "display_name": "Bea"}
+    assert context["latest_speaker"] == {
+        "user_id": "20",
+        "display_name": "Bea",
+        "username": "bea.account",
+    }
     assert context["recent_public_channel_messages"][0]["message_id"] == "1"
     assert context["recent_public_channel_messages"][0]["user_id"] == "10"
     assert context["recent_public_channel_messages"][0]["author_type"] == "member"
@@ -69,6 +74,7 @@ def test_discord_context_keeps_speakers_and_notes_separate() -> None:
     assert context["recent_public_channel_messages"][1]["user_id"] == "20"
     assert context["server_member_notes"][0]["notes"] == ["Likes chess"]
     assert context["latest_message"] == "what game should we play?"
+    assert "You know who is talking to you" in prompt
 
 
 def test_discord_context_includes_exact_reply_target() -> None:
@@ -228,7 +234,7 @@ async def test_discord_prompt_retrieves_separate_mem0_profiles_for_named_people(
         id=50,
         guild=guild,
         channel=channel,
-        author=SimpleNamespace(id=20, display_name="Alex"),
+        author=SimpleNamespace(id=20, display_name="Alex", name="alex.account"),
     )
 
     prompt = await cog._discord_prompt(message, "what does Bea like?", None)
@@ -238,6 +244,11 @@ async def test_discord_prompt_retrieves_separate_mem0_profiles_for_named_people(
     context = json.loads(context_json)
     profiles = context["server_member_notes"]
 
+    assert context["latest_speaker"] == {
+        "user_id": "20",
+        "display_name": "Alex",
+        "username": "alex.account",
+    }
     assert profiles == [
         {"user_id": "20", "display_name": "Alex", "notes": ["Likes chess"]},
         {

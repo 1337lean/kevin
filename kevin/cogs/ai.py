@@ -453,6 +453,8 @@ class AI(commands.Cog):
     ) -> str:
         speaker_id = message.author.id
         speaker_name = self._display_name(message.author)
+        raw_speaker_username = getattr(message.author, "name", None)
+        speaker_username = str(raw_speaker_username) if raw_speaker_username else None
         recent: list[ServerMessage] = []
         profiles: list[MemberMemory] = []
         guild_id = int(getattr(message.guild, "id", 0))
@@ -517,6 +519,7 @@ class AI(commands.Cog):
             question,
             speaker_id=speaker_id,
             speaker_name=speaker_name,
+            speaker_username=speaker_username,
             recent_messages=recent,
             member_memories=profiles,
             previous_reply=previous_reply,

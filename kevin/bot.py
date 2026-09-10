@@ -5,6 +5,7 @@ import logging
 import discord
 from discord.ext import commands
 
+from kevin.access import is_blocked_discord_user
 from kevin.config import Settings
 from kevin.database import Database
 from kevin.utils.formatting import embed
@@ -69,6 +70,21 @@ class KevinBot(commands.Bot):
         self.settings = settings
         self.db = Database(settings.database_path)
         self.started_at = discord.utils.utcnow()
+        # discord.py routes interactions before dispatching its public event.
+        # Gate the gateway parser so buttons/modals cannot bypass command checks.
+        self._interaction_parser = self._connection.parsers["INTERACTION_CREATE"]
+        self._connection.parsers["INTERACTION_CREATE"] = self._parse_interaction_create
+
+    def _parse_interaction_create(self, data: dict) -> None:
+        user = data.get("member", {}).get("user") or data.get("user", {})
+        if is_blocked_discord_user(int(user.get("id", 0))):
+            return
+        self._interaction_parser(data)
+
+    async def process_commands(self, message: discord.Message) -> None:
+        if is_blocked_discord_user(message.author.id):
+            return
+        await super().process_commands(message)
 
     async def setup_hook(self) -> None:
         await self.db.connect()

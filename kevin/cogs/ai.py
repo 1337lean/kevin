@@ -14,6 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from kevin.access import is_blocked_discord_user
 from kevin.bot import KevinBot
 from kevin.market_data import (
     MarketDataError,
@@ -629,6 +630,8 @@ class AI(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
+        if is_blocked_discord_user(message.author.id):
+            return
         if message.guild is None or self.bot.user is None:
             return
         if message.author.id == self.bot.user.id or getattr(message.author, "bot", False):

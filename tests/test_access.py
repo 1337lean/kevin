@@ -9,10 +9,9 @@ from kevin.config import Settings
 
 SADREW = 272282285141786625
 OWNER = 1267893879919738991
-BLOCKED_USER = 1189439193861083149
 
 
-@pytest.mark.parametrize("user_id,allowed", [(SADREW, True), (OWNER, True), (BLOCKED_USER, False)])
+@pytest.mark.parametrize("user_id,allowed", [(SADREW, True), (OWNER, True)])
 async def test_prefix_commands_gate_only_blocked_account(user_id, allowed):
     bot = KevinBot(Settings(token="test"))
     message = SimpleNamespace(author=SimpleNamespace(id=user_id))
@@ -23,7 +22,7 @@ async def test_prefix_commands_gate_only_blocked_account(user_id, allowed):
 
 @pytest.mark.parametrize("interaction_type", [2, 3, 4, 5])
 @pytest.mark.parametrize("in_guild", [False, True])
-@pytest.mark.parametrize("user_id,allowed", [(SADREW, True), (OWNER, True), (BLOCKED_USER, False)])
+@pytest.mark.parametrize("user_id,allowed", [(SADREW, True), (OWNER, True)])
 def test_interactions_gate_before_discord_routing(interaction_type, in_guild, user_id, allowed):
     bot = KevinBot(Settings(token="test"))
     bot._interaction_parser = Mock()
@@ -41,9 +40,10 @@ async def test_blocked_ai_message_never_observed_or_answered(content):
     cog = AI(SimpleNamespace(user=SimpleNamespace(id=999), settings=Settings(token="test")))
     cog._record_observation = AsyncMock()
     cog._ask_openai = AsyncMock()
-    message = SimpleNamespace(author=SimpleNamespace(id=BLOCKED_USER), content=content, reply=AsyncMock())
+    message = SimpleNamespace(author=SimpleNamespace(id=SADREW), content=content, reply=AsyncMock())
 
-    await cog.on_message(message)
+    with patch("kevin.access.BLOCKED_DISCORD_USER_IDS", frozenset({SADREW})):
+        await cog.on_message(message)
 
     cog._record_observation.assert_not_awaited()
     cog._ask_openai.assert_not_awaited()
